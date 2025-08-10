@@ -30,6 +30,31 @@ StmtPtr Parser::parse_statement() {
     return statement;
 }
 
+bool Parser::is_expression_start() const {
+    switch (current_token_.type) {
+        // Literals
+        case TokenType::Identifier:
+        case TokenType::NumberLiteral:
+        case TokenType::StringLiteral:
+        case TokenType::CharLiteral:
+        case TokenType::BooleanLiteral:
+        // Prefix operators
+        case TokenType::Indirection:   // This is the crucial '!'
+        case TokenType::AddressOf:
+        case TokenType::Minus:
+        // Expression keywords
+        case TokenType::Valof:
+        case TokenType::FValof:
+        case TokenType::Vec:
+        case TokenType::String:
+        // Grouping
+        case TokenType::LParen:
+            return true;
+        default:
+            return false;
+    }
+}
+
 /**
  * @brief Parses a non-REPEAT statement based on the current token.
  */
@@ -48,8 +73,8 @@ StmtPtr Parser::parse_primary_statement() {
     }
     // --- END OF FIX ---
 
-    // A statement starting with an identifier could be an assignment or a routine call.
-    if (check(TokenType::Identifier)) {
+    // A statement starting with an expression (including identifier, indirection, etc.)
+    if (is_expression_start()) {
         return parse_assignment_or_routine_call();
     }
     // A statement starting with a brace is a block or compound statement.
@@ -75,7 +100,6 @@ StmtPtr Parser::parse_primary_statement() {
         case TokenType::Endcase:    return parse_endcase_statement();
         case TokenType::Resultis:   return parse_resultis_statement();
         default:
-            error("Expected a statement.");
             return nullptr;
     }
 }
@@ -86,42 +110,42 @@ StmtPtr Parser::parse_primary_statement() {
 StmtPtr Parser::parse_assignment_or_routine_call() {
     TraceGuard guard(*this, "parse_assignment_or_routine_call");
 
-    // First, parse it as a generic expression.
-    ExprPtr expr = parse_expression();
-    if (!expr) {
+    // 1. Parse the entire expression on the left. This will correctly handle
+    //    simple variables (X), vector access (V!0), and indirection (!P).
+    ExprPtr left_expr = parse_expression();
+    if (!left_expr) {
         error("Expected an expression for assignment or routine call.");
         return nullptr;
     }
 
+    // 2. After parsing the expression, check what follows.
+    if (match(TokenType::Assign)) {
+        // --- It's an Assignment Statement ---
+        // The 'left_expr' is the target.
+        std::vector<ExprPtr> lhs_exprs;
+        lhs_exprs.push_back(std::move(left_expr));
 
-    // If the parsed expression is a FunctionCall node, it's a routine call.
-    if (expr->getType() == ASTNode::NodeType::FunctionCallExpr) {
-        auto call_expr = static_cast<FunctionCall*>(expr.release());
-        return std::make_unique<RoutineCallStatement>(std::move(call_expr->function_expr), std::move(call_expr->arguments));
+        // Parse the right-hand side value(s).
+        std::vector<ExprPtr> rhs_exprs;
+        do {
+            rhs_exprs.push_back(parse_expression());
+        } while (match(TokenType::Comma));
+
+        return std::make_unique<AssignmentStatement>(std::move(lhs_exprs), std::move(rhs_exprs));
     }
 
-    // Otherwise, it must be an assignment.
-    std::vector<ExprPtr> lhs_exprs;
-    lhs_exprs.push_back(std::move(expr));
-
-    // Handle multiple assignment targets (e.g., x, y, z := ...).
-    while (match(TokenType::Comma)) {
-        lhs_exprs.push_back(parse_expression());
+    // 3. If it's not an assignment, it must be a routine call.
+    //    This means the expression we just parsed must have been a FunctionCall node.
+    if (left_expr->getType() == ASTNode::NodeType::FunctionCallExpr) {
+        auto call_expr = static_cast<FunctionCall*>(left_expr.release());
+        return std::make_unique<RoutineCallStatement>(
+            std::move(call_expr->function_expr), std::move(call_expr->arguments)
+        );
     }
 
-    consume(TokenType::Assign, "Expect ':=' for an assignment statement.");
-
-    // Handle multiple assignment values (e.g., ... := 1, 2, 3).
-    std::vector<ExprPtr> rhs_exprs;
-    do {
-        rhs_exprs.push_back(parse_expression());
-    } while (match(TokenType::Comma));
-
-    if (lhs_exprs.size() != rhs_exprs.size()) {
-        error("Mismatch in number of l-values and r-values for assignment.");
-        return nullptr;
-    }
-    return std::make_unique<AssignmentStatement>(std::move(lhs_exprs), std::move(rhs_exprs));
+    // 4. If it's not an assignment and not a routine call, it's a syntax error.
+    error("Expected ':=' for an assignment or '(' for a routine call after expression.");
+    return nullptr;
 }
 
 /**

@@ -130,14 +130,27 @@ ExprPtr Parser::parse_expression(int precedence) {
             left = std::make_unique<BinaryOp>(op, std::move(left), std::move(right));
         }
     }
+
     return left;
 }
+
 
 /**
  * @brief Parses the "atoms" of an expression (literals, variables, etc.).
  */
 ExprPtr Parser::parse_primary_expression() {
     TraceGuard guard(*this, "parse_primary_expression");
+
+    // --- ADD THIS NEW BLOCK AT THE TOP ---
+    // Handle prefix indirection operator `!` specifically as a primary expression
+    if (match(TokenType::Indirection)) {
+        // This parses expressions like `!P` or `!(P+1)`
+        // The precedence here is high, matching the unary operator level.
+        ExprPtr operand = parse_expression(8);
+        return std::make_unique<UnaryOp>(UnaryOp::Operator::Indirection, std::move(operand));
+    }
+    // --- END OF NEW BLOCK ---
+
     if (match(TokenType::NumberLiteral)) {
         const std::string& val_str = previous_token_.value;
         if (val_str.find('.') != std::string::npos || val_str.find('e') != std::string::npos || val_str.find('E') != std::string::npos) {

@@ -41,6 +41,7 @@ private:
     bool is_at_end() const;
     void error(const std::string& message);
     void synchronize();
+    bool is_expression_start() const;
 
     // --- Statement Parsers ---
     // Statements
@@ -109,6 +110,7 @@ private:
         TraceGuard(Parser& parser, const std::string& name);
         ~TraceGuard();
     private:
+        bool is_expression_start() const;
         Parser& parser_;
     };
 };

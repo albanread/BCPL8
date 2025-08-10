@@ -9,7 +9,7 @@ Token Lexer::scan_operator() {
         case ',': return make_token(TokenType::Comma);
         case ';': return make_token(TokenType::Semicolon);
         case '@': return make_token(TokenType::AddressOf);
-        case '!': return make_token(TokenType::VecIndirection);
+        case '!': return make_token(TokenType::Indirection);
         case '%': return make_token(TokenType::CharIndirection);
         case '&': return make_token(TokenType::LogicalAnd);
         case '|': return make_token(TokenType::LogicalOr);

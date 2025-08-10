@@ -129,6 +129,7 @@ private:
     void handle_vector_assignment(VectorAccess* vec_access, const std::string& value_to_store_reg);
     void handle_char_indirection_assignment(CharIndirection* char_indirection, const std::string& value_to_store_reg);
     void handle_float_vector_indirection_assignment(FloatVectorIndirection* float_vec_indirection, const std::string& value_to_store_reg);
+    void handle_indirection_assignment(UnaryOp* unary_op, const std::string& value_to_store_reg);
 
 private:
     uint64_t text_segment_size_;
