@@ -1,0 +1,2 @@
+/usr/bin/ar qc libbcpl_runtime_jit.a CMakeFiles/bcpl_runtime_jit.dir/runtime_bridge.cpp.o CMakeFiles/bcpl_runtime_jit.dir/heap_c_bridge.cpp.o CMakeFiles/bcpl_runtime_jit.dir/RuntimeBridge.cpp.o
+/usr/bin/ranlib libbcpl_runtime_jit.a

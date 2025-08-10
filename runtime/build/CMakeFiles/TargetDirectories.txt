@@ -1,0 +1,9 @@
+/Users/oberon/projects/NewBCPL/runtime/build/CMakeFiles/bcpl_runtime_jit.dir
+/Users/oberon/projects/NewBCPL/runtime/build/CMakeFiles/bcpl_runtime_c.dir
+/Users/oberon/projects/NewBCPL/runtime/build/CMakeFiles/print_runtime_vars.dir
+/Users/oberon/projects/NewBCPL/runtime/build/CMakeFiles/edit_cache.dir
+/Users/oberon/projects/NewBCPL/runtime/build/CMakeFiles/rebuild_cache.dir
+/Users/oberon/projects/NewBCPL/runtime/build/CMakeFiles/list_install_components.dir
+/Users/oberon/projects/NewBCPL/runtime/build/CMakeFiles/install.dir
+/Users/oberon/projects/NewBCPL/runtime/build/CMakeFiles/install/local.dir
+/Users/oberon/projects/NewBCPL/runtime/build/CMakeFiles/install/strip.dir
