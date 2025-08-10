@@ -11,14 +11,12 @@
 struct RuntimeFunction {
     std::string name;
     int num_args; // Number of arguments the function expects
-    // Placeholder for the actual address, to be filled by the JIT/Linker
-    // For now, we'll use a size_t, which can hold a pointer.
     void* address; 
-    FunctionType type; // Add this line
+    FunctionType type;
+    size_t table_offset; // <-- ADD THIS LINE
 
-    // Update the constructor to accept the type.
     RuntimeFunction(std::string n, int args, void* addr, FunctionType t = FunctionType::STANDARD)
-        : name(std::move(n)), num_args(args), address(addr), type(t) {}
+        : name(std::move(n)), num_args(args), address(addr), type(t), table_offset(0) {} // <-- INITIALIZE IN CONSTRUCTOR
 };
 
 // Manages information about external runtime functions
@@ -45,6 +43,9 @@ public:
     // Checks if a function is registered.
     bool is_function_registered(const std::string& name) const;
 
+    // Gets the offset of a runtime function in the global pointer table.
+    size_t get_function_offset(const std::string& name) const;
+
     // Utility: Convert a string to uppercase for case-insensitive lookup
     static std::string to_upper(const std::string& s);
 
@@ -59,6 +60,9 @@ public:
     // Prints all registered runtime functions, their addresses, and argument counts
     void print_registered_functions() const;
 
+    // Populates the X28-relative function pointer table in the .data segment
+    void populate_function_pointer_table(void* data_segment_base) const;
+
 private:
     // Flag to indicate if tracing is enabled.
     bool trace_enabled_ = false;
@@ -71,6 +75,7 @@ private:
     RuntimeManager& operator=(RuntimeManager&&) = delete;
 
     std::unordered_map<std::string, RuntimeFunction> functions_;
+    size_t next_table_offset_ = 0; // <-- ADD THIS LINE
 };
 
 #endif // RUNTIME_MANAGER_H

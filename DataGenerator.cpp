@@ -97,7 +97,9 @@ void DataGenerator::add_global_variable(const std::string& name, ExprPtr initial
 
 void DataGenerator::calculate_global_offsets() {
     global_word_offsets_.clear();
-    size_t current_word_offset = 0;
+    // Start offsets *after* the 256-slot runtime function pointer table (0-based, so start at 255).
+    const int RUNTIME_TABLE_SIZE_POINTERS = 256;
+    size_t current_word_offset = RUNTIME_TABLE_SIZE_POINTERS;
     for (const auto& info : static_variables_) {
         // Assign the next available 64-bit word slot.
         global_word_offsets_[info.label] = current_word_offset++;
@@ -191,6 +193,23 @@ void DataGenerator::generate_rodata_section(InstructionStream& stream) {
  * @param stream The instruction stream to add the data to.
  */
 void DataGenerator::generate_data_section(InstructionStream& stream) {
+    // --- NEW: Reserve space for the runtime function pointer table ---
+    const int RUNTIME_TABLE_SIZE_POINTERS = 256;
+
+    // Define a label at the base of the table. This is mainly for debugging clarity.
+    Instruction table_base_label;
+    table_base_label.is_label_definition = true;
+    table_base_label.target_label = "L__runtime_function_table";
+    table_base_label.segment = SegmentType::DATA;
+    stream.add(table_base_label);
+
+    // Add 256 zeroed-out 64-bit entries to reserve the space.
+    for (int i = 0; i < RUNTIME_TABLE_SIZE_POINTERS; ++i) {
+        // Use an empty label string as these are just space fillers.
+        stream.add_data64(0, "", SegmentType::DATA);
+    }
+    // --- END NEW ---
+
     calculate_global_offsets();
 
     if (static_variables_.empty()) {
@@ -348,21 +367,40 @@ std::string DataGenerator::generate_data_listing(const LabelManager& label_manag
 
     std::stringstream ss;
     ss << "\n--- JIT .data Segment Dump ---\n";
-    
+    ss << "Base address: 0x" << std::hex << reinterpret_cast<uintptr_t>(data_base_address) << std::dec << "\n";
+
+    // Show the function pointer table (first 256 entries)
+    ss << "\n[Function Pointer Table]\n";
+    const int RUNTIME_TABLE_SIZE_POINTERS = 256;
+    const auto& functions = RuntimeManager::instance().get_registered_functions();
+    // Show only used slots (those with registered functions)
+    for (const auto& pair : functions) {
+        const RuntimeFunction& func = pair.second;
+        uintptr_t entry_addr = reinterpret_cast<uintptr_t>(static_cast<char*>(data_base_address) + func.table_offset);
+        uint64_t ptr_value = *reinterpret_cast<uint64_t*>(entry_addr);
+        ss << std::left << std::setw(20) << func.name
+           << " [offset " << func.table_offset << "]"
+           << " @ 0x" << std::hex << entry_addr
+           << " | Ptr: 0x" << ptr_value << std::dec << "\n";
+    }
+    ss << "----------------------------\n";
+
+    // Show global variable data
     if (static_variables_.empty()) {
         ss << "(No global read-write variables defined)\n";
-    }
+    } else {
+        ss << "\n[Global Data]\n";
+        for (const auto& info : static_variables_) {
+            if (label_manager.is_label_defined(info.label)) {
+                uintptr_t address = label_manager.get_label_address(info.label);
+                // Read the final value directly from the JIT's data memory
+                uint64_t value = *reinterpret_cast<uint64_t*>(address);
 
-    for (const auto& info : static_variables_) {
-        if (label_manager.is_label_defined(info.label)) {
-            uintptr_t address = label_manager.get_label_address(info.label);
-            // Read the final value directly from the JIT's data memory
-            uint64_t value = *reinterpret_cast<uint64_t*>(address);
-
-            ss << std::left << std::setw(20) << info.label
-               << " @ 0x" << std::hex << address
-               << " | Value: " << std::dec << static_cast<int64_t>(value)
-               << " (0x" << std::hex << value << std::dec << ")" << std::endl;
+                ss << std::left << std::setw(20) << info.label
+                   << " @ 0x" << std::hex << address
+                   << " | Value: " << std::dec << static_cast<int64_t>(value)
+                   << " (0x" << std::hex << value << std::dec << ")" << std::endl;
+            }
         }
     }
     ss << "----------------------------\n";

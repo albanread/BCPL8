@@ -43,8 +43,6 @@ bool RegisterManager::is_variable_spilled(const std::string& variable_name) cons
 void RegisterManager::initialize_registers() {
     registers.clear();
     variable_to_reg_map.clear();
-    cache_lru_order_.clear();
-    cache_reg_to_routine_.clear();
     variable_reg_lru_order_.clear();
     spilled_variables_.clear();
     
@@ -55,9 +53,7 @@ void RegisterManager::initialize_registers() {
     for (const auto& reg : SCRATCH_REGS) {
         registers[reg].dirty = false;
     }
-    for (const auto& reg : ROUTINE_CACHE_REGS) {
-        registers[reg].dirty = false;
-    }
+
     for (const auto& reg : FP_VARIABLE_REGS) {
         registers[reg].dirty = false;
     }
@@ -66,7 +62,7 @@ void RegisterManager::initialize_registers() {
     }
 
     // Initialize all managed registers to FREE
-    for (const auto& reg : ROUTINE_CACHE_REGS) registers[reg] = {FREE, "", false};
+
     for (const auto& reg : VARIABLE_REGS) registers[reg] = {FREE, "", false};
     for (const auto& reg : SCRATCH_REGS) registers[reg] = {FREE, "", false};
     for (const auto& reg : RESERVED_REGS) registers[reg] = {IN_USE_DATA_BASE, "data_base", false};

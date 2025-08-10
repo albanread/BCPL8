@@ -43,8 +43,7 @@ public:
         return names;
     }
 
-    // Explicitly forces X19 and X20 to be saved/restored, regardless of locals.
-    void force_save_x19_x20();
+    // Explicitly forces a register to be saved/restored, regardless of locals.
     void force_save_register(const std::string& reg_name);
 
     // Predictively reserve callee-saved registers based on register pressure.

@@ -25,12 +25,6 @@ public:
     bool is_scratch_register(const std::string& register_name) const;
 
 
-    void clear_routine_cache();
-
-    // --- New Cache Management API ---
-    std::string get_cached_routine_reg(const std::string& routine_name);
-    std::string get_reg_for_cache_eviction(const std::string& routine_name);
-
     // --- Variable & Scratch Management (Updated to use partitioned pools) ---
     std::pair<std::string, bool> acquire_reg_for_variable(const std::string& variable_name, NewCodeGenerator& code_gen);
     void release_reg_for_variable(const std::string& variable_name);
@@ -129,14 +123,12 @@ public:
 
 
     const std::string DATA_BASE_REG = "X28";
-    const std::vector<std::string> ROUTINE_CACHE_REGS = {"X19", "X20"};
     static const std::vector<std::string> VARIABLE_REGS;
     const std::vector<std::string> SCRATCH_REGS = {"X10", "X11", "X12", "X13", "X14", "X15"};
     const std::vector<std::string> RESERVED_REGS = {DATA_BASE_REG};
 
-    std::list<std::string> cache_lru_order_;
-    std::unordered_map<std::string, std::string> cache_reg_to_routine_;
     std::unordered_set<std::string> spilled_variables_;
+
 
     void initialize_registers();
     std::string find_free_register(const std::vector<std::string>& pool);

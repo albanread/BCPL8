@@ -31,6 +31,14 @@ cmake --build "${BUILD_DIR}" 2>> "${ERRORS_FILE}"
 cp "${BUILD_DIR}/libbcpl_runtime_jit.a" "${TOP_LEVEL_DIR}/" 2>> "${ERRORS_FILE}"
 if [ "${BUILD_STANDALONE}" = "ON" ]; then
     cp "${BUILD_DIR}/libbcpl_runtime_c.a" "${TOP_LEVEL_DIR}/" 2>> "${ERRORS_FILE}"
+    # Extract and copy bcpl_runtime.o
+    cd "${BUILD_DIR}"
+    OBJFILE="CMakeFiles/bcpl_runtime_c.dir/runtime.c.o"
+    ar x libbcpl_runtime_c.a "$OBJFILE"
+    cp "$OBJFILE" ../..
+    cd ../..
+    mv runtime.c.o bcpl_runtime.o
+    echo "Standalone object file bcpl_runtime.o created in ${TOP_LEVEL_DIR}/"
 fi
 if [ "${BUILD_TEST}" = "ON" ]; then
     cp "${BUILD_DIR}/runtime_test" "${TOP_LEVEL_DIR}/" 2>> "${ERRORS_FILE}"

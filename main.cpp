@@ -228,7 +228,7 @@ int main(int argc, char* argv[]) {
         ManifestResolutionPass manifest_pass(g_global_manifest_constants);
         ast = manifest_pass.apply(std::move(ast));
 
-        // --- NEW: Build Symbol Table ---
+        // ---  Build Symbol Table ---
         if (enable_tracing || trace_symbols) std::cout << "Building symbol table...\n";
         SymbolTableBuilder symbol_table_builder(enable_tracing || trace_symbols);
         std::unique_ptr<SymbolTable> symbol_table = symbol_table_builder.build(*ast);
@@ -262,7 +262,7 @@ int main(int argc, char* argv[]) {
 
         ASTAnalyzer& analyzer = ASTAnalyzer::getInstance();
 
-       // Pass 1: Analyze the original tree to get hints from specific nodes like FVALOF
+    
        // Now that we have a symbol table, pass it to the analyzer
        analyzer.analyze(*ast, symbol_table.get());
        if (enable_tracing || trace_ast) {
@@ -270,13 +270,12 @@ int main(int argc, char* argv[]) {
            analyzer.print_report();
        }
 
-       // Pass 2: Transform the tree
+ 
        analyzer.transform(*ast);
        if (enable_tracing || trace_ast) std::cout << "AST transformation complete.\n";
 
 
-
-        // --- NEW: CFG Construction Pass ---
+ 
         if (enable_tracing || trace_cfg) std::cout << "Building Control Flow Graphs...\n";
         CFGBuilderPass cfg_builder(enable_tracing || trace_cfg);
         cfg_builder.build(*ast);
@@ -287,7 +286,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // --- NEW: Liveness Analysis Pass ---
+ 
         if (enable_tracing || trace_liveness) std::cout << "Running Liveness Analysis...\n";
         LivenessAnalysisPass liveness_analyzer(cfg_builder.get_cfgs(), enable_tracing || trace_liveness);
         liveness_analyzer.run();
@@ -295,7 +294,7 @@ int main(int argc, char* argv[]) {
             liveness_analyzer.print_results();
         }
 
-        // --- NEW: Update ASTAnalyzer with precise register pressure ---
+     
         if (enable_tracing || trace_liveness) std::cout << "Updating register pressure from liveness data...\n";
         auto pressure_results = liveness_analyzer.calculate_register_pressure();
 
@@ -310,7 +309,7 @@ int main(int argc, char* argv[]) {
                 function_metrics.at(func_name).max_live_variables = pressure;
             }
         }
-        // --- END OF NEW CODE ---
+     
 
         // --- Code Generation ---
         InstructionStream instruction_stream(LabelManager::instance());
@@ -366,6 +365,9 @@ int main(int argc, char* argv[]) {
 
         if (run_jit) {
             void* code_buffer_base = handle_jit_compilation(jit_data_memory_base, instruction_stream, g_jit_breakpoint_offset, enable_tracing || trace_codegen);
+
+            // --- Populate the runtime function pointer table before populating the data segment and executing code ---
+            RuntimeManager::instance().populate_function_pointer_table(jit_data_memory_base);
 
             data_generator.populate_data_segment(jit_data_memory_base, label_manager);
 
@@ -594,7 +596,7 @@ void* handle_jit_compilation(void* jit_data_memory_base, InstructionStream& inst
             }
 
             case SegmentType::DATA: {
-                // This logic for read-write globals is already correct.
+               
                 size_t offset = instr.address - reinterpret_cast<size_t>(jit_data_memory_base);
                 char* dest = static_cast<char*>(jit_data_memory_base) + offset;
 

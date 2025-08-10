@@ -127,6 +127,7 @@ std::vector<Instruction> Linker::process(
                      }
                  } else {
                      new_instr.address = data_cursor;
+                     // Always increment by 4 bytes for each data instruction
                      data_cursor += 4;
                  }
                  break;

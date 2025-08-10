@@ -123,6 +123,12 @@ void AssemblyWriter::write_to_file(const std::string& path,
             external_symbols.insert("_" + instr.target_label);
         }
 
+        // --- NEW: Also add JitCall targets to external symbols ---
+        if (instr.jit_attribute == JITAttribute::JitCall && !instr.target_label.empty()) {
+            external_symbols.insert("_" + instr.target_label);
+        }
+        // --- END NEW ---
+
         // Ensure all registered runtime routines are declared as .globl
         const auto& registered_functions = RuntimeManager::instance().get_registered_functions();
         for (const auto& func_pair : registered_functions) {
@@ -167,6 +173,9 @@ void AssemblyWriter::write_to_file(const std::string& path,
                 if (original_label == "L__data_segment_base") {
                     continue; // Skip this specific label here.
                 }
+                if (original_label == "L__runtime_function_table") {
+                    continue; // Skip this specific label here.
+                }
                 // *** END KLUDGE ***
 
                 if (written_labels.find(original_label) == written_labels.end()) {
@@ -196,7 +205,21 @@ void AssemblyWriter::write_to_file(const std::string& path,
         // --- END NEW LOGIC ---
 
         if (instr.jit_attribute == JITAttribute::JitAddress) {
-            i += 3;
+            // This attribute is used for JIT-specific address loading that
+            // should be omitted or handled differently in static assembly.
+
+            // Case 1: The 4-instruction MOVZ/MOVK sequence for absolute addresses.
+            if (instr.assembly_text.rfind("MOVZ ", 0) == 0) {
+                i += 3; // Skip this MOVZ and the next three MOVKs.
+                continue;
+            }
+            // Case 2: The single LDR instruction for loading a runtime function pointer.
+            // This LDR is followed by a BLR (marked as JitCall) which we will convert to a direct BL.
+            // So, we just need to skip this LDR.
+            else if (instr.assembly_text.rfind("LDR ", 0) == 0) {
+                continue; // Skip just this LDR instruction.
+            }
+            // Fallback for any other unexpected JitAddress instruction.
             continue;
         } else if (instr.jit_attribute == JITAttribute::JitStore || instr.jit_attribute == JITAttribute::JitRestore) {
             continue;
@@ -256,9 +279,31 @@ void AssemblyWriter::write_to_file(const std::string& path,
     if (!data_instructions.empty()) {
         ofs << "\n.section __DATA,__data\n";
         ofs << ".p2align 3\n";
+        bool skipping_runtime_table = false;
         for (const auto& instr : data_instructions) {
-            if (!instr.target_label.empty()) {
+            // Check if this is the start of the runtime function table.
+            if (instr.is_label_definition && instr.target_label == "L__runtime_function_table") {
+                skipping_runtime_table = true;
+                continue; // Skip writing the label itself.
+            }
+
+            // If we are in the runtime table section, check if we've reached the end.
+            if (skipping_runtime_table) {
+                // The table entries are just data. A new label definition marks the end of the table.
+                if (instr.is_label_definition) {
+                    skipping_runtime_table = false;
+                } else {
+                    continue; // Skip the data entries of the runtime table.
+                }
+            }
+
+            // If the instruction is a label definition, print the label.
+            if (instr.is_label_definition && !instr.target_label.empty()) {
                 ofs << instr.target_label << ":\n";
+            }
+
+            // If the instruction has assembly text (like .quad or .long), print it.
+            if (!instr.assembly_text.empty()) {
                 std::string asm_line = instr.assembly_text;
                 if (asm_line.rfind("DCQ ", 0) == 0) {
                     asm_line.replace(0, 3, ".quad");

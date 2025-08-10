@@ -1271,10 +1271,6 @@ void NewCodeGenerator::generate_function_like_code(
     // Set up a new CallFrameManager for this function/routine.
     current_frame_manager_ = std::make_unique<CallFrameManager>(register_manager_, name, debug_enabled_);
 
-    // Force saving of X19 and X20 because they are used as routine cache registers
-    // and their values need to persist across calls within this function.
-    current_frame_manager_->force_save_x19_x20();
-
     // Inform the CallFrameManager about the parameters BEFORE generating the prologue.
     for (const auto& param_name : parameters) {
         current_frame_manager_->add_parameter(param_name);
@@ -1500,7 +1496,6 @@ void NewCodeGenerator::generate_function_like_code(
     exit_scope();
 
     // Clean up the CallFrameManager unique_ptr.
-    register_manager_.clear_routine_cache();
     current_frame_manager_.reset();
 }
 
