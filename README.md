@@ -2,8 +2,7 @@
 
 # **NewBCPL Compiler**
 
-This is a compiler for the BCPL programming language. It targets the 
-**ARM64 (AArch64)** architecture, with a primary focus on the **macOS** platform. 
+This is a compiler (under development) for a subset of the BCPL programming language. It targets the **ARM64 (AArch64)** architecture, with a primary focus on the **macOS** platform. 
 
 The project includes a Just-In-Time (JIT) compilation and execution engine as well as a static compiler that generates assembly code and asks clang to build it.
 
@@ -19,7 +18,6 @@ The project includes a Just-In-Time (JIT) compilation and execution engine as we
 
 * **Executable Generation**: The \--exec flag uses clang to assemble the generated .s file with the BCPL runtime library to produce a native executable
 
-\<br/\>
 
 ### **Language and Runtime**
 
@@ -27,28 +25,27 @@ The project includes a Just-In-Time (JIT) compilation and execution engine as we
 
 * **Control Flow**: Supports standard control flow statements such as IF/THEN/ELSE, WHILE/UNTIL, FOR, SWITCHON, GOTO, and REPEAT
 
-* **Data Structures**: Supports VEC for vectors (arrays of words) and STRING for character arrays888.
+* **Data Structures**: Supports VEC for vectors (arrays of words) and STRING for (32bit unicode) character arrays.
 
 * **Custom Heap Manager**: Includes a runtime heap manager for VEC and STRING allocations and deallocations.
 
-* **Runtime Library**: Provides a set of built-in runtime functions for I/O (WRITES, WRITEN, READN, etc.) and memory management (MALLOC, FREEVEC), which are linked automatically10101010.
+* **Runtime Library**: Provides a set of built-in runtime functions for I/O (WRITES, WRITEN, READN, etc.) and memory management (MALLOC, FREEVEC), which are linked automatically.
 
-* **Floating-Point Support**: The language and runtime include support for floating-point variables (FLET), floating-point VALOF blocks, and floating-point arithmetic and runtime functions
+* **Floating-Point Support**: The language and runtime includes some support for floating-point variables (FLET), floating-point FVALOF blocks, simple floating-point arithmetic and runtime functions
 
-\<br/\>
 
 ### **Compiler Architecture**
 
-The compilation process consists of several distinct passes:
+The compilation process consists of several distinct and typical passes:
 
-1. **Preprocessor**: Handles GET directives for file inclusion and supports include paths12.
+1. **Preprocessor**: Handles GET directives for file inclusion and supports include paths.
 
 2. **Lexing and Parsing**: A standard lexer and a Pratt-based parser build an Abstract Syntax Tree (AST) from the source code
 
 3. **Semantic Analysis**:  
    * **Manifest Resolution**: Resolves MANIFEST constants at compile-time, replacing variable access nodes with literals in the AST
 
-   * **Symbol Table Construction**: Builds a scoped symbol table to track all identifiers, including variables, functions, and their types15151515.
+   * **Symbol Table Construction**: Builds a scoped symbol table to track all identifiers, including variables, functions, and their types.
 
    * **AST Analysis**: Traverses the AST to gather metrics on functions, determine variable types, and identify global variable access
 
@@ -59,17 +56,15 @@ The compilation process consists of several distinct passes:
 
    * **Strength Reduction**: Replaces expensive operations with cheaper equivalents.
 
-   * **Peephole Optimizer**: Scans the final instruction stream to replace inefficient sequences with more optimal ones.
+   * **Peephole Optimizer**: Scans the final instruction stream to replace inefficient sequences with slightl less inefficient ones.
 
-5. **Control Flow Graph (CFG) Generation**: Constructs a CFG for each function and routine before code generation1.
+5. **Control Flow Graph (CFG) Generation**: Constructs a CFG for each function and routine before code generation.
 
-6. **Liveness Analysis**: Performs liveness analysis on the CFG to determine the live intervals of variables and calculate register pressure for each function.
+6. **Liveness Analysis**: Performs liveness analysis on the CFG to determine the live intervals of variables only used to calculate register pressure for each function.
 
 7. **Code Generation**: A CFG-driven code generator traverses the basic blocks to produce ARM64 machine instructions. It uses a register manager that performs spilling when registers are exhausted.
 
-8. **Linking**: A simple linker resolves PC-relative and absolute addresses for labels and runtime functions, patching the machine code for both JIT and static compilation25.
-
-\<br/\>
+8. **Linking**: A simple linker resolves PC-relative and absolute addresses for labels and runtime functions, patching the machine code for both JIT and static compilation.
 
 ### **Debugging and Tooling**
 
@@ -81,16 +76,20 @@ The compilation process consists of several distinct passes:
 
 * **Signal Handling**: A signal handler provides a register dump and stack trace on fatal errors like segmentation faults.
 
+* **BRK** The BRK statement will trigger the signal handler.
+
+* --break START -4   will set a breakpoint 4 instructions above the label 'START'
+
 ---
 
 ## **Current Status**
 
 * **Platform**: The compiler is developed and tested primarily for **ARM64 macOS**. While it uses standard C++, platform-specific code for JIT memory management (
+  MAP\_JIT) and system calls makes it incompatible with other platforms without modification. The next target on the list will be ARM64 Linux.
 
-  MAP\_JIT) and system calls makes it incompatible with other platforms without modification.
-
-* **Language Completeness**: The compiler supports a significant subset of the BCPL language but may not cover all features of the original language specification.  
-* **Known Issues**: The Boolean Short-Circuiting optimization pass is currently disabled due to known memory management issues.
+* **Language Completeness**: The compiler supports a significant subset of the BCPL language but may not cover all features of the original language specification. The scoping is currently function scoping, this compiler is not suitable for your important library of legacy BCPL code. It is aimed at bringing the fun of BCPL to modern systems. 
+   
+* **Known Issues**: The Boolean Short-Circuiting optimization pass is currently disabled due to known memory management issues. Many others although stability is improving.
 
 ---
 
@@ -99,13 +98,12 @@ The compilation process consists of several distinct passes:
 The project is built using a standard build system. The runtime library must be compiled first.
 
 1. **Build the Runtime Library:**  
-   Bash  
-   cd runtime  
-   make
+buildruntime.sh
 
 2. **Build the Compiler:**  
-   Bash  
-   make
+build.sh --clean
+
+The runtime is minimal for testing, and is really a seperate project.
 
 ---
 
