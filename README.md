@@ -49,7 +49,7 @@ The compilation process consists of several distinct and typical passes:
 
    * **AST Analysis**: Traverses the AST to gather metrics on functions, determine variable types, and identify global variable access
 
-4. **Optimization (Optional)**:  
+4. **Optimization (Optional/Limited/Extensible)**:  
    * **Constant Folding & Dead Branch Elimination**: Evaluates constant expressions at compile time and removes unreachable code branches (e.g., IF TRUE ...).
 
    * **Common Subexpression Elimination (CSE)**: Identifies and eliminates redundant calculations within functions.
@@ -62,7 +62,7 @@ The compilation process consists of several distinct and typical passes:
 
 6. **Liveness Analysis**: Performs liveness analysis on the CFG to determine the live intervals of variables only used to calculate register pressure for each function.
 
-7. **Code Generation**: A CFG-driven code generator traverses the basic blocks to produce ARM64 machine instructions. It uses a register manager that performs spilling when registers are exhausted.
+7. **Code Generation**: A CFG-driven code generator traverses the basic blocks to produce ARM64 machine instructions. It uses a register manager that performs spilling when registers are exhausted. The CFG is responsible for flow control.
 
 8. **Linking**: A simple linker resolves PC-relative and absolute addresses for labels and runtime functions, patching the machine code for both JIT and static compilation.
 
