@@ -21,9 +21,9 @@ The project includes a Just-In-Time (JIT) compilation and execution engine as we
 
 ### **Language and Runtime**
 
-* **BCPL Subset**: Implements a subset of the BCPL language, including LET, FLET, FUNCTION, ROUTINE, GLOBAL, STATIC, and MANIFEST declarations
+* **BCPL Subset**: Implements a subset of the BCPL language, including LET, FLET, FUNCTION, ROUTINE, ~~GLOBAL~~, STATIC, and MANIFEST declarations
 
-* **Control Flow**: Supports standard control flow statements such as IF/THEN/ELSE, WHILE/UNTIL, FOR, SWITCHON, GOTO, and REPEAT
+* **Control Flow**: Supports most standard control flow statements such as IF/THEN, TEST/ELSE/THEN, WHILE DO, FOR, ~~SWITCHON~~, GOTO, and REPEAT, REPEAT UNTIL, REPEAT WHILE.
 
 * **Data Structures**: Supports VEC for vectors (arrays of words) and STRING for (32bit unicode) character arrays.
 
@@ -88,6 +88,8 @@ The compilation process consists of several distinct and typical passes:
   MAP\_JIT) and system calls makes it incompatible with other platforms without modification. The next target on the list will be ARM64 Linux.
 
 * **Language Completeness**: The compiler supports a significant subset of the BCPL language but may not cover all features of the original language specification. The scoping is currently function scoping, this compiler is not suitable for your important library of legacy BCPL code. It is aimed at bringing the fun of BCPL to modern systems. 
+
+* **The global vector**: There is one but it is prepopulated by the runtime.
    
 * **Known Issues**: The Boolean Short-Circuiting optimization pass is currently disabled due to known memory management issues. Many others although stability is improving.
 
