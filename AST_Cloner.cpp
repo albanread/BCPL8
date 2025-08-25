@@ -38,6 +38,8 @@ ASTNodePtr Program::clone() const { //
     return cloned_program; //
 }
 
+
+
 // --- Declarations --- //
 ASTNodePtr LetDeclaration::clone() const { //
     // Uses the generic clone_vector for ExprPtr
@@ -49,7 +51,9 @@ ASTNodePtr ManifestDeclaration::clone() const { //
 }
 
 ASTNodePtr StaticDeclaration::clone() const { //
-    return std::make_unique<StaticDeclaration>(name, clone_unique_ptr(initializer)); //
+    auto cloned = std::make_unique<StaticDeclaration>(name, clone_unique_ptr(initializer)); //
+    cloned->is_float_declaration = this->is_float_declaration; //
+    return cloned; //
 }
 
 ASTNodePtr GlobalDeclaration::clone() const { //
@@ -115,6 +119,14 @@ ASTNodePtr FloatVectorIndirection::clone() const { //
     return std::make_unique<FloatVectorIndirection>(clone_unique_ptr(vector_expr), clone_unique_ptr(index_expr)); //
 }
 
+ASTNodePtr BitfieldAccessExpression::clone() const {
+    return std::make_unique<BitfieldAccessExpression>(
+        clone_unique_ptr(base_expr),
+        clone_unique_ptr(start_bit_expr),
+        clone_unique_ptr(width_expr)
+    );
+}
+
 ASTNodePtr FunctionCall::clone() const { //
     // Uses the generic clone_vector for ExprPtr
     return std::make_unique<FunctionCall>(clone_unique_ptr(function_expr), clone_vector(arguments)); //
@@ -137,11 +149,12 @@ ASTNodePtr StringAllocationExpression::clone() const { //
 }
 
 ASTNodePtr FreeStatement::clone() const { //
-    return std::make_unique<FreeStatement>(clone_unique_ptr(expression_)); //
+    return std::make_unique<FreeStatement>(clone_unique_ptr(list_expr)); //
 }
 
 ASTNodePtr TableExpression::clone() const { //
-    return std::make_unique<TableExpression>(clone_vector(initializers)); //
+    auto cloned = std::make_unique<TableExpression>(clone_vector(initializers), is_float_table); //
+    return cloned; //
 }
 
 // --- Statements --- //

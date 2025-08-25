@@ -2,6 +2,8 @@
 // FLET implementation for floating-point declarations
 #define CALL_FRAME_MANAGER_H
 
+#include "RegisterManager.h" // Required for the constant vectors
+
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -18,15 +20,18 @@ public:
     // Constructor: Takes a reference to the RegisterManager
     CallFrameManager(RegisterManager& register_manager, const std::string& function_name = "", bool debug = false);
 
-    // Informs the manager of a new local variable that needs space on the stack.
-    void add_local(const std::string& variable_name, int size_in_bytes = 8);
-    void add_parameter(const std::string& name);
+    // Informs the manager of a new local variable that needs space on the stack, with type.
+    void add_local(const std::string& variable_name, VarType type);
+    void add_parameter(const std::string& name, VarType type);
 
     // Retrieves the stack offset for a previously declared local variable.
     int get_offset(const std::string& variable_name) const;
 
     // Set the type of a variable (for dynamic temporaries)
     void set_variable_type(const std::string& variable_name, VarType type);
+
+    // Get the type of a variable (returns VarType::UNKNOWN if not found)
+    VarType get_variable_type(const std::string& variable_name) const;
 
     // Allocates a spill slot for a variable and returns its offset
     int get_spill_offset(const std::string& variable_name);
@@ -46,6 +51,9 @@ public:
     // Explicitly forces a register to be saved/restored, regardless of locals.
     void force_save_register(const std::string& reg_name);
 
+    // Set whether this function uses global pointer registers (X19/X28)
+    void setUsesGlobalPointers(bool uses) { uses_global_pointers_ = uses; }
+
     // Predictively reserve callee-saved registers based on register pressure.
     void reserve_registers_based_on_pressure(int register_pressure);
 
@@ -58,10 +66,14 @@ public:
     // Checks if a local variable with the given name exists.
     bool has_local(const std::string& variable_name) const;
 
-    // Mark a variable as floating-point type
-    void mark_variable_as_float(const std::string& variable_name);
+    // Mark a variable as floating-point type (deprecated, use set_variable_type instead)
+    [[deprecated("Use add_local/add_parameter with VarType instead")]]
+    void mark_variable_as_float(const std::string& variable_name) { set_variable_type(variable_name, VarType::FLOAT); }
+
+    // --- ADD THIS NEW METHOD ---
+    void set_active_register_pool(bool use_extended_pool);
     
-    // Check if a variable is a floating-point type
+    // Check if a variable is a floating-point type (implemented in cf_is_float_variable.cpp)
     bool is_float_variable(const std::string& variable_name) const;
 
     // Generates a human-readable string representing the current state of the stack frame.
@@ -104,7 +116,10 @@ private:
     int spill_area_size_; // Total size of the spill area
     int next_spill_offset_; // Offset for the next spill slot
     std::map<std::string, int> spill_variable_offsets_; // Maps variable names to spill offsets
-    std::unordered_map<std::string, bool> float_variables_; // Tracks which variables are floating-point types
+    std::unordered_map<std::string, VarType> variable_types_; // Tracks the VarType for each variable
+
+    // Helper to get the stack size for a given VarType
+    size_t get_size_for_type(VarType type) const;
 
 public:
     // Pre-allocate spill slots before prologue generation
@@ -114,6 +129,12 @@ private:
     int final_frame_size;
     std::vector<std::string> callee_saved_registers_to_save;
     bool is_prologue_generated;
+
+    // Track if this function uses global pointer registers (X19/X28)
+    bool uses_global_pointers_ = false;
+
+    // Pointer to the currently active pool
+    const std::vector<std::string>* active_variable_regs_ = &RegisterManager::VARIABLE_REGS; // Default to standard pool
 
     // The final calculated offset for our dedicated slot.
     int x29_spill_slot_offset;

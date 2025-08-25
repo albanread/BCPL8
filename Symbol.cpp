@@ -66,6 +66,48 @@ std::string Symbol::to_string() const {
         case VarType::ANY:
             oss << "ANY";
             break;
+        case VarType::POINTER_TO_INT:
+            oss << "POINTER_TO_INT";
+            break;
+        case VarType::POINTER_TO_FLOAT:
+            oss << "POINTER_TO_FLOAT";
+            break;
+        case VarType::POINTER_TO_FLOAT_VEC:
+            oss << "POINTER_TO_FLOAT_VEC";
+            break;
+        case VarType::POINTER_TO_INT_VEC:
+            oss << "POINTER_TO_INT_VEC";
+            break;
+        case VarType::POINTER_TO_STRING:
+            oss << "POINTER_TO_STRING";
+            break;
+        case VarType::POINTER_TO_TABLE:
+            oss << "POINTER_TO_TABLE";
+            break;
+        case VarType::POINTER_TO_ANY_LIST:
+            oss << "POINTER_TO_ANY_LIST";
+            break;
+        case VarType::POINTER_TO_INT_LIST:
+            oss << "POINTER_TO_INT_LIST";
+            break;
+        case VarType::POINTER_TO_FLOAT_LIST:
+            oss << "POINTER_TO_FLOAT_LIST";
+            break;
+        case VarType::POINTER_TO_LIST_NODE:
+            oss << "POINTER_TO_LIST_NODE";
+            break;
+        case VarType::CONST_POINTER_TO_INT_LIST:
+            oss << "CONST_POINTER_TO_INT_LIST";
+            break;
+        case VarType::CONST_POINTER_TO_FLOAT_LIST:
+            oss << "CONST_POINTER_TO_FLOAT_LIST";
+            break;
+        case VarType::CONST_POINTER_TO_ANY_LIST:
+            oss << "CONST_POINTER_TO_ANY_LIST";
+            break;
+        default:
+            oss << "UNKNOWN_TYPE";
+            break;
     }
     
     // Add scope level

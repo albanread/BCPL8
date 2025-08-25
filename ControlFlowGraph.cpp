@@ -1,5 +1,8 @@
 #include "ControlFlowGraph.h"
 #include <iostream>
+#include <vector>
+#include <unordered_set>
+#include <algorithm>
 
 // Accessor for all basic blocks (needed for register pressure calculation)
 
@@ -30,13 +33,17 @@ std::string to_string(ASTNode::NodeType type) {
         case ASTNode::NodeType::VectorAccessExpr: return "VectorAccessExpr";
         case ASTNode::NodeType::CharIndirectionExpr: return "CharIndirectionExpr";
         case ASTNode::NodeType::FloatVectorIndirectionExpr: return "FloatVectorIndirectionExpr";
+        case ASTNode::NodeType::BitfieldAccessExpr: return "BitfieldAccessExpr";
         case ASTNode::NodeType::FunctionCallExpr: return "FunctionCallExpr";
+        case ASTNode::NodeType::ListExpr: return "ListExpr";
         case ASTNode::NodeType::ConditionalExpr: return "ConditionalExpr";
         case ASTNode::NodeType::ValofExpr: return "ValofExpr";
         case ASTNode::NodeType::FloatValofExpr: return "FloatValofExpr";
         case ASTNode::NodeType::VecAllocationExpr: return "VecAllocationExpr";
+        case ASTNode::NodeType::FVecAllocationExpr: return "FVecAllocationExpr";
         case ASTNode::NodeType::StringAllocationExpr: return "StringAllocationExpr";
         case ASTNode::NodeType::TableExpr: return "TableExpr";
+        case ASTNode::NodeType::VecInitializerExpr: return "VecInitializerExpr";
         case ASTNode::NodeType::AssignmentStmt: return "AssignmentStmt";
         case ASTNode::NodeType::RoutineCallStmt: return "RoutineCallStmt";
         case ASTNode::NodeType::IfStmt: return "IfStmt";
@@ -46,6 +53,7 @@ std::string to_string(ASTNode::NodeType type) {
         case ASTNode::NodeType::UntilStmt: return "UntilStmt";
         case ASTNode::NodeType::RepeatStmt: return "RepeatStmt";
         case ASTNode::NodeType::ForStmt: return "ForStmt";
+        case ASTNode::NodeType::ForEachStmt: return "ForEachStmt";
         case ASTNode::NodeType::SwitchonStmt: return "SwitchonStmt";
         case ASTNode::NodeType::CaseStmt: return "CaseStmt";
         case ASTNode::NodeType::DefaultStmt: return "DefaultStmt";
@@ -65,6 +73,7 @@ std::string to_string(ASTNode::NodeType type) {
         case ASTNode::NodeType::Declaration: return "Declaration (Base)";
         case ASTNode::NodeType::Expression: return "Expression (Base)";
         case ASTNode::NodeType::Statement: return "Statement (Base)";
+        // Removed FreeListStmt case (no longer needed)
     }
     return "Unknown NodeType";
 }
@@ -96,6 +105,25 @@ BasicBlock* ControlFlowGraph::get_block(const std::string& id) const {
         return it->second.get();
     }
     return nullptr;
+}
+
+std::vector<BasicBlock*> ControlFlowGraph::get_blocks_in_rpo() const {
+    std::vector<BasicBlock*> post_order;
+    std::unordered_set<BasicBlock*> visited;
+
+    // Recursive DFS helper
+    std::function<void(BasicBlock*)> dfs = [&](BasicBlock* block) {
+        if (!block || visited.count(block)) return;
+        visited.insert(block);
+        for (BasicBlock* succ : block->successors) {
+            dfs(succ);
+        }
+        post_order.push_back(block);
+    };
+
+    dfs(entry_block);
+    std::reverse(post_order.begin(), post_order.end());
+    return post_order;
 }
 
 void ControlFlowGraph::print_cfg() const {

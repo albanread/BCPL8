@@ -13,10 +13,7 @@ std::vector<Instruction> CallFrameManager::generate_epilogue() {
     // 1. Restore all callee-saved registers that were saved in the prologue.
     for (const auto& reg : callee_saved_registers_to_save) {
         int offset = variable_offsets.at(reg);
-        Instruction instr = Encoder::create_ldr_imm(reg, "X29", offset);
-        if (reg == "X19" || reg == "X20") {
-            instr.assembly_text += " ; [JIT_RESTORE]";
-        }
+        Instruction instr = Encoder::create_ldr_imm(reg, "X29", offset, "");
         instr.assembly_text += " ; Restored Reg: " + reg + " @ FP+" + std::to_string(offset);
         epilogue_code.push_back(instr);
     }
@@ -28,7 +25,7 @@ std::vector<Instruction> CallFrameManager::generate_epilogue() {
         int lower_canary_offset = 16 + CANARY_SIZE; // Assumes CANARY_SIZE is defined.
 
         // Canary Check: Upper Canary. Branch to handler on failure.
-        epilogue_code.push_back(Encoder::create_ldr_imm("X10", "X29", upper_canary_offset));
+        epilogue_code.push_back(Encoder::create_ldr_imm("X10", "X29", upper_canary_offset, ""));
         epilogue_code.back().assembly_text += " ; Load Upper Stack Canary for check";
         for (const auto& instr : Encoder::create_movz_movk_abs64("X11", UPPER_CANARY_VALUE, "")) {
             epilogue_code.push_back(instr);
@@ -40,7 +37,7 @@ std::vector<Instruction> CallFrameManager::generate_epilogue() {
         epilogue_code.back().assembly_text += " ; Branch if Upper Canary Corrupted";
 
         // Canary Check: Lower Canary. Branch to handler on failure.
-        epilogue_code.push_back(Encoder::create_ldr_imm("X10", "X29", lower_canary_offset));
+        epilogue_code.push_back(Encoder::create_ldr_imm("X10", "X29", lower_canary_offset, ""));
         epilogue_code.back().assembly_text += " ; Load Lower Stack Canary for check";
         for (const auto& instr : Encoder::create_movz_movk_abs64("X11", LOWER_CANARY_VALUE, "")) {
             epilogue_code.push_back(instr);
@@ -55,11 +52,12 @@ std::vector<Instruction> CallFrameManager::generate_epilogue() {
     // 5. Normal return path: tear down the stack frame.
     epilogue_code.push_back(Encoder::create_mov_sp_fp());
     epilogue_code.back().assembly_text += " ; Deallocate frame by moving FP to SP";
-    epilogue_code.push_back(Encoder::create_ldr_imm("X29", "SP", 0));
+    epilogue_code.push_back(Encoder::create_ldr_imm("X29", "SP", 0, ""));
     epilogue_code.back().assembly_text += " ; Restore caller's Frame Pointer";
-    epilogue_code.push_back(Encoder::create_ldr_imm("X30", "SP", 8));
+    epilogue_code.push_back(Encoder::create_ldr_imm("X30", "SP", 8, ""));
     epilogue_code.back().assembly_text += " ; Restore Link Register";
-    epilogue_code.push_back(Encoder::create_add_imm("SP", "SP", this->final_frame_size));
+    // FIX: Only add 16 to pop the two 64-bit registers (FP and LR).
+    epilogue_code.push_back(Encoder::create_add_imm("SP", "SP", 16));
     epilogue_code.back().assembly_text += " ; Deallocate space for saved FP/LR";
     
     // 6. The single, standard return instruction.

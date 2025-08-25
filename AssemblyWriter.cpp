@@ -263,15 +263,31 @@ void AssemblyWriter::write_to_file(const std::string& path,
     if (!rodata_instructions.empty()) {
         ofs << "\n.section __TEXT,__const\n";
         ofs << ".p2align 3\n";
-        for (const auto& instr : rodata_instructions) {
+        for (size_t i = 0; i < rodata_instructions.size(); ++i) {
+            const auto& instr = rodata_instructions[i];
+
+            // If this is the high 32 bits of an address, skip it.
+            if (instr.relocation == RelocationType::ABSOLUTE_ADDRESS_HI32) {
+                continue;
+            }
+
             if (instr.is_label_definition && !instr.target_label.empty()) {
                 ofs << instr.target_label << ":\n";
             }
+
             std::string asm_line = instr.assembly_text;
-            if (asm_line.rfind("DCD ", 0) == 0) {
+
+            // Explicitly handle our new relocation type for clean output.
+            if (instr.relocation == RelocationType::ABSOLUTE_ADDRESS_LO32) {
+                asm_line = ".quad " + instr.target_label;
+            } else if (asm_line.rfind("DCD ", 0) == 0) {
                 asm_line.replace(0, 3, ".long");
             }
-            ofs << "    " << asm_line << "\n";
+
+            // Only write if there's something to write (handles empty placeholders).
+            if (!asm_line.empty() && asm_line.find_first_not_of(" \t;") != std::string::npos) {
+                ofs << "    " << asm_line << "\n";
+            }
         }
     }
 
@@ -280,7 +296,14 @@ void AssemblyWriter::write_to_file(const std::string& path,
         ofs << "\n.section __DATA,__data\n";
         ofs << ".p2align 3\n";
         bool skipping_runtime_table = false;
-        for (const auto& instr : data_instructions) {
+        for (size_t i = 0; i < data_instructions.size(); ++i) {
+            const auto& instr = data_instructions[i];
+
+            // If this is the high 32 bits of an address, skip it.
+            if (instr.relocation == RelocationType::ABSOLUTE_ADDRESS_HI32) {
+                continue;
+            }
+
             // Check if this is the start of the runtime function table.
             if (instr.is_label_definition && instr.target_label == "L__runtime_function_table") {
                 skipping_runtime_table = true;
@@ -305,12 +328,18 @@ void AssemblyWriter::write_to_file(const std::string& path,
             // If the instruction has assembly text (like .quad or .long), print it.
             if (!instr.assembly_text.empty()) {
                 std::string asm_line = instr.assembly_text;
-                if (asm_line.rfind("DCQ ", 0) == 0) {
+
+                if (instr.relocation == RelocationType::ABSOLUTE_ADDRESS_LO32) {
+                    asm_line = ".quad " + instr.target_label;
+                } else if (asm_line.rfind("DCQ ", 0) == 0) {
                     asm_line.replace(0, 3, ".quad");
                 } else if (asm_line.rfind("DCD ", 0) == 0) {
                     asm_line.replace(0, 3, ".long");
                 }
-                ofs << "    " << asm_line << "\n";
+
+                if (!asm_line.empty() && asm_line.find_first_not_of(" \t;") != std::string::npos) {
+                    ofs << "    " << asm_line << "\n";
+                }
             }
         }
     }

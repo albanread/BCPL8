@@ -57,9 +57,12 @@ public:
         LetDecl, ManifestDecl, StaticDecl, GlobalDecl, FunctionDecl, RoutineDecl, LabelDecl,
         NumberLit, StringLit, CharLit, BooleanLit, VariableAccessExpr, BinaryOpExpr, UnaryOpExpr,
         VectorAccessExpr, CharIndirectionExpr, FloatVectorIndirectionExpr, FunctionCallExpr, SysCallExpr,
-        ConditionalExpr, ValofExpr, FloatValofExpr, VecAllocationExpr, StringAllocationExpr, TableExpr,
+        BitfieldAccessExpr, // <-- Added for bitfield operator
+        ListExpr, // <-- Added for LIST syntax
+        ConditionalExpr, ValofExpr, FloatValofExpr, VecAllocationExpr, FVecAllocationExpr, StringAllocationExpr, TableExpr,
+        VecInitializerExpr, // Add this new type
         AssignmentStmt, RoutineCallStmt, IfStmt, UnlessStmt, TestStmt, WhileStmt, UntilStmt,
-        RepeatStmt, ForStmt, SwitchonStmt, GotoStmt, ReturnStmt, FinishStmt, BreakStmt,
+        RepeatStmt, ForStmt, ForEachStmt, SwitchonStmt, GotoStmt, ReturnStmt, FinishStmt, BreakStmt,
         LoopStmt, EndcaseStmt, ResultisStmt, CompoundStmt, BlockStmt, StringStmt, FreeStmt,
         CaseStmt, DefaultStmt, BrkStatement, LabelTargetStmt, ConditionalBranchStmt
     };
@@ -99,6 +102,9 @@ public:
 };
 
 // --- Statements --- //
+
+// --- FreeStatement for FREEVEC and FREELIST ---
+
 class Statement : public ASTNode {
 public:
     Statement(NodeType type) : ASTNode(type) {}
@@ -108,6 +114,24 @@ public:
     // --- Live interval/liveness analysis helpers ---
     virtual std::vector<std::string> get_used_variables() const { return {}; }
     virtual std::vector<std::string> get_defined_variables() const { return {}; }
+};
+
+// --- ForEachStatement for FOREACH/FFOREACH ---
+class ForEachStatement : public Statement {
+public:
+    std::string loop_variable_name;
+    std::string type_variable_name; // NEW: holds the type tag variable, if present
+    ExprPtr collection_expression;
+    StmtPtr body;
+    VarType filter_type; // INTEGER for FOREACH, FLOAT for FFOREACH
+    VarType inferred_element_type = VarType::UNKNOWN; // <-- Added for type-aware FOREACH
+
+    ForEachStatement(std::string value_var, std::string type_var, ExprPtr collection, StmtPtr body, VarType type)
+        : Statement(NodeType::ForEachStmt), loop_variable_name(std::move(value_var)), type_variable_name(std::move(type_var)),
+          collection_expression(std::move(collection)), body(std::move(body)), filter_type(type) {}
+
+    void accept(ASTVisitor& visitor) override;
+    ASTNodePtr clone() const override;
 };
 
 class LetDeclaration : public Statement {
@@ -136,9 +160,10 @@ class StaticDeclaration : public Declaration {
 public:
     std::string name;
     ExprPtr initializer;
+    bool is_float_declaration = false;
 
-    StaticDeclaration(std::string name, ExprPtr initializer)
-        : Declaration(NodeType::StaticDecl), name(std::move(name)), initializer(std::move(initializer)) {}
+    StaticDeclaration(std::string name, ExprPtr initializer, bool is_float_declaration = false)
+        : Declaration(NodeType::StaticDecl), name(std::move(name)), initializer(std::move(initializer)), is_float_declaration(is_float_declaration) {}
     void accept(ASTVisitor& visitor) override;
     ASTNodePtr clone() const override;
 };
@@ -213,6 +238,31 @@ public:
     virtual bool is_literal() const { return false; }
 };
 
+// --- ListExpression for LIST syntax ---
+class ListExpression : public Expression {
+public:
+    std::vector<ExprPtr> initializers;
+    bool is_manifest = false;
+
+    ListExpression(std::vector<ExprPtr> initializers, bool is_manifest = false)
+        : Expression(NodeType::ListExpr), initializers(std::move(initializers)), is_manifest(is_manifest) {}
+
+    void accept(ASTVisitor& visitor) override;
+    ASTNodePtr clone() const override;
+};
+
+class VecInitializerExpression : public Expression {
+public:
+    std::vector<ExprPtr> initializers;
+
+    explicit VecInitializerExpression(std::vector<ExprPtr> inits)
+        : Expression(NodeType::VecInitializerExpr), initializers(std::move(inits)) {}
+
+    NodeType getType() const override { return NodeType::VecInitializerExpr; }
+    void accept(ASTVisitor& visitor) override;
+    ASTNodePtr clone() const override;
+};
+
 class NumberLiteral : public Expression {
 public:
     enum class LiteralType { Integer, Float };
@@ -272,7 +322,7 @@ public:
     enum class Operator {
         Add, Subtract, Multiply, Divide, Remainder,
         Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
-        LogicalAnd, LogicalOr, Equivalence, NotEquivalence,
+        LogicalAnd, BitwiseAnd, LogicalOr, BitwiseOr, Equivalence, NotEquivalence,
         LeftShift, RightShift,
         FloatAdd, FloatSubtract, FloatMultiply, FloatDivide,
         FloatEqual, FloatNotEqual, FloatLess, FloatLessEqual, FloatGreater, FloatGreaterEqual
@@ -289,7 +339,11 @@ public:
 
 class UnaryOp : public Expression {
 public:
-    enum class Operator { AddressOf, Indirection, LogicalNot, Negate, FloatConvert };
+    enum class Operator {
+        AddressOf, Indirection, LogicalNot, BitwiseNot, Negate, FloatConvert, FloatSqrt, FloatFloor, FloatTruncate,
+        LengthOf, HeadOf, TailOf, TailOfNonDestructive, HeadOfAsFloat,
+        TypeOf // NEW: for TYPEOF intrinsic
+    };
     Operator op;
     ExprPtr operand;
 
@@ -325,6 +379,23 @@ public:
     ExprPtr index_expr;
     FloatVectorIndirection(ExprPtr vector_expr, ExprPtr index_expr)
         : Expression(NodeType::FloatVectorIndirectionExpr), vector_expr(std::move(vector_expr)), index_expr(std::move(index_expr)) {}
+    void accept(ASTVisitor& visitor) override;
+    ASTNodePtr clone() const override;
+};
+
+// --- BitfieldAccessExpression --- //
+class BitfieldAccessExpression : public Expression {
+public:
+    ExprPtr base_expr;
+    ExprPtr start_bit_expr;
+    ExprPtr width_expr;
+
+    BitfieldAccessExpression(ExprPtr base, ExprPtr start, ExprPtr width)
+        : Expression(NodeType::BitfieldAccessExpr),
+          base_expr(std::move(base)),
+          start_bit_expr(std::move(start)),
+          width_expr(std::move(width)) {}
+
     void accept(ASTVisitor& visitor) override;
     ASTNodePtr clone() const override;
 };
@@ -406,31 +477,32 @@ public:
     ASTNodePtr clone() const override;
 };
 
+// --- FVEC Allocation Expression --- //
+class FVecAllocationExpression : public Expression {
+public:
+    ExprPtr size_expr;
+    std::string variable_name; // Name of the variable being allocated (optional, for symmetry)
+    FVecAllocationExpression(ExprPtr size_expr)
+        : Expression(NodeType::FVecAllocationExpr), size_expr(std::move(size_expr)), variable_name("") {}
+    void accept(ASTVisitor& visitor) override;
+    ASTNodePtr clone() const override;
+
+    // Accessor for the variable name
+    const std::string& get_variable_name() const { return variable_name; }
+};
+
 class TableExpression : public Expression {
 public:
     std::vector<ExprPtr> initializers;
-    TableExpression(std::vector<ExprPtr> initializers)
-        : Expression(NodeType::TableExpr), initializers(std::move(initializers)) {}
+    bool is_float_table = false;
+    TableExpression(std::vector<ExprPtr> initializers, bool is_float_table = false)
+        : Expression(NodeType::TableExpr), initializers(std::move(initializers)), is_float_table(is_float_table) {}
     void accept(ASTVisitor& visitor) override;
     ASTNodePtr clone() const override;
 };
 
 
 // Forward declare
-class FreeStatement;
-
-// Add the class definition
-class FreeStatement : public Statement {
-public:
-    ExprPtr expression_;
-    explicit FreeStatement(ExprPtr expression) : Statement(NodeType::FreeStmt), expression_(std::move(expression)) {}
-    void accept(ASTVisitor& visitor) override;
-    ASTNodePtr clone() const override;
-    NodeType getType() const override { return NodeType::FreeStmt; }
-};
-
-
-
 class AssignmentStatement : public Statement {
 public:
     std::vector<ExprPtr> lhs;
@@ -450,22 +522,19 @@ public:
                 const auto* var = static_cast<const VariableAccess*>(expr.get());
                 used.push_back(var->name);
             }
-            // TODO: Recursively handle more complex expressions if needed
         }
         return used;
     }
-    std::vector<std::string> get_defined_variables() const override {
-        std::vector<std::string> defs;
-        // Collect variable names from all LHS expressions
-        for (const auto& expr : lhs) {
-            if (expr && expr->getType() == ASTNode::NodeType::VariableAccessExpr) {
-                const auto* var = static_cast<const VariableAccess*>(expr.get());
-                defs.push_back(var->name);
-            }
-            // TODO: Recursively handle more complex LHS if needed
-        }
-        return defs;
-    }
+};
+
+// --- FreeStatement for FREEVEC and FREELIST ---
+class FreeStatement : public Statement {
+public:
+    ExprPtr list_expr;
+    explicit FreeStatement(ExprPtr expr) : Statement(NodeType::FreeStmt), list_expr(std::move(expr)) {}
+    void accept(ASTVisitor& visitor) override;
+    ASTNodePtr clone() const override;
+    NodeType getType() const override { return NodeType::FreeStmt; }
 };
 
 class RoutineCallStatement : public Statement {

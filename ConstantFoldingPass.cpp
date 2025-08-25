@@ -1,6 +1,9 @@
 #include "ConstantFoldingPass.h"
 #include <iostream>
 
+// Trace flag for optimizer debug output
+static bool trace_optimizer = false;
+
 // --- Helpers for evaluating constant expressions ---
 
 // Evaluates an expression to an integer constant, if possible.
@@ -215,13 +218,71 @@ void ConstantFoldingPass::visit(BinaryOp& node) {
             case BinaryOp::Operator::GreaterEqual: result = (left_int.value() >= right_int.value()) ? static_cast<int64_t>(-1) : static_cast<int64_t>(0); break;
             case BinaryOp::Operator::LogicalAnd: result = (left_int.value() != 0 && right_int.value() != 0) ? static_cast<int64_t>(-1) : static_cast<int64_t>(0); break;
             case BinaryOp::Operator::LogicalOr: result = (left_int.value() != 0 || right_int.value() != 0) ? static_cast<int64_t>(-1) : static_cast<int64_t>(0); break;
+            case BinaryOp::Operator::BitwiseOr: result = left_int.value() | right_int.value(); break;
             case BinaryOp::Operator::Equivalence: result = (left_int.value() == right_int.value()) ? static_cast<int64_t>(-1) : static_cast<int64_t>(0); break;
             case BinaryOp::Operator::NotEquivalence: result = (left_int.value() != right_int.value()) ? static_cast<int64_t>(-1) : static_cast<int64_t>(0); break;
             default: foldable = false; break;
         }
         if (foldable) {
             current_transformed_node_ = std::make_unique<NumberLiteral>(result);
-            std::cout << "[OPTIMIZER] Folded BinaryOp to NumberLiteral: " << result << std::endl;
+            if (trace_optimizer) {
+                std::cout << "[OPTIMIZER] Folded BinaryOp to NumberLiteral: " << result << std::endl;
+            }
+            return;
+        }
+    }
+
+    // --- Algebraic Simplification Logic ---
+    // Identity: X + 0 => X  or  0 + X => X
+    if (node.op == BinaryOp::Operator::Add) {
+        if (left_int.has_value() && left_int.value() == 0) {
+            current_transformed_node_ = std::move(node.right); // Replace with right side
+            return;
+        }
+        if (right_int.has_value() && right_int.value() == 0) {
+            current_transformed_node_ = std::move(node.left); // Replace with left side
+            return;
+        }
+    }
+
+    // Identity: X - 0 => X
+    if (node.op == BinaryOp::Operator::Subtract) {
+        if (right_int.has_value() && right_int.value() == 0) {
+            current_transformed_node_ = std::move(node.left); // Replace with left side
+            return;
+        }
+    }
+
+    // Identity: X * 1 => X  or  1 * X => X
+    if (node.op == BinaryOp::Operator::Multiply) {
+        if (left_int.has_value() && left_int.value() == 1) {
+            current_transformed_node_ = std::move(node.right); // Replace with right side
+            return;
+        }
+        if (right_int.has_value() && right_int.value() == 1) {
+            current_transformed_node_ = std::move(node.left); // Replace with left side
+            return;
+        }
+        // X * 0 => 0 or 0 * X => 0
+        if ((left_int.has_value() && left_int.value() == 0) ||
+            (right_int.has_value() && right_int.value() == 0)) {
+            current_transformed_node_ = std::make_unique<NumberLiteral>(static_cast<int64_t>(0));
+            return;
+        }
+    }
+
+    // Identity: X / 1 => X
+    if (node.op == BinaryOp::Operator::Divide) {
+        if (right_int.has_value() && right_int.value() == 1) {
+            current_transformed_node_ = std::move(node.left); // Replace with left side
+            return;
+        }
+    }
+
+    // Identity: X - X => 0
+    if (node.op == BinaryOp::Operator::Subtract) {
+        if (left_int.has_value() && right_int.has_value() && left_int.value() == right_int.value()) {
+            current_transformed_node_ = std::make_unique<NumberLiteral>(static_cast<int64_t>(0));
             return;
         }
     }
@@ -252,10 +313,10 @@ void ConstantFoldingPass::visit(BinaryOp& node) {
         }
         if (foldable) {
             if (is_comparison) {
-                current_transformed_node_ = std::make_unique<NumberLiteral>(bool_result);
+                current_transformed_node_ = std::make_unique<NumberLiteral>(static_cast<int64_t>(bool_result));
                 std::cout << "[OPTIMIZER] Folded Float comparison to NumberLiteral: " << bool_result << std::endl;
             } else {
-                current_transformed_node_ = std::make_unique<NumberLiteral>(result);
+                current_transformed_node_ = std::make_unique<NumberLiteral>(static_cast<double>(result));
                 std::cout << "[OPTIMIZER] Folded Float BinaryOp to NumberLiteral: " << result << std::endl;
             }
             return;
@@ -270,13 +331,16 @@ void ConstantFoldingPass::visit(UnaryOp& node) {
     if (int_val.has_value()) {
         switch (node.op) {
             case UnaryOp::Operator::Negate:
-                current_transformed_node_ = std::make_unique<NumberLiteral>(-(int_val.value()));
+                current_transformed_node_ = std::make_unique<NumberLiteral>(static_cast<int64_t>(-(int_val.value())));
                 std::cout << "[OPTIMIZER] Folded UnaryOp to NumberLiteral: " << -(int_val.value()) << std::endl;
                 return;
             case UnaryOp::Operator::LogicalNot:
                 current_transformed_node_ = std::make_unique<NumberLiteral>(int_val.value() == 0 ? static_cast<int64_t>(-1) : static_cast<int64_t>(0));
                 std::cout << "[OPTIMIZER] Folded LogicalNot to NumberLiteral: " << (int_val.value() == 0 ? -1 : 0) << std::endl;
                 return;
+            case UnaryOp::Operator::TailOfNonDestructive:
+                // REST is not a constant-foldable operation, but we should not crash.
+                break;
             default: break;
         }
     }
@@ -284,7 +348,7 @@ void ConstantFoldingPass::visit(UnaryOp& node) {
     auto float_val = evaluate_float_constant(node.operand.get());
     if (float_val.has_value()) {
          if (node.op == UnaryOp::Operator::Negate) {
-            current_transformed_node_ = std::make_unique<NumberLiteral>(-(float_val.value()));
+            current_transformed_node_ = std::make_unique<NumberLiteral>(static_cast<double>(-(float_val.value())));
             std::cout << "[OPTIMIZER] Folded Float UnaryOp to NumberLiteral: " << -(float_val.value()) << std::endl;
             return;
         }
@@ -312,6 +376,16 @@ void ConstantFoldingPass::visit(ConditionalExpression& node) {
 }
 
 // --- Other visit methods (default traversal from Optimizer base class) ---
+void ConstantFoldingPass::visit(FunctionDeclaration& node) {
+    known_constants_.clear(); // Reset for the new function scope.
+    Optimizer::visit(node);   // Continue with normal traversal.
+}
+
+void ConstantFoldingPass::visit(RoutineDeclaration& node) {
+    known_constants_.clear(); // Reset for the new routine scope.
+    Optimizer::visit(node);   // Continue with normal traversal.
+}
+
 void ConstantFoldingPass::visit(VecAllocationExpression& node) {}
 
 void ConstantFoldingPass::visit(ValofExpression& node) {
@@ -337,11 +411,56 @@ void ConstantFoldingPass::visit(GlobalVariableDeclaration& node) {
 }
 
 void ConstantFoldingPass::visit(VariableAccess& node) {
-   auto it = manifests_.find(node.name);
-   if (it != manifests_.end()) {
-       current_transformed_node_ = std::make_unique<NumberLiteral>(it->second);
-       std::cout << "[OPTIMIZER] Folded VariableAccess '" << node.name << "' (MANIFEST) to NumberLiteral: " << it->second << std::endl;
-   }
+    // 1. Check our new map of known local constants first.
+    auto it_local = known_constants_.find(node.name);
+    if (it_local != known_constants_.end()) {
+        // This variable has a known constant value. Replace this node
+        // with a NumberLiteral containing that value.
+        current_transformed_node_ = std::make_unique<NumberLiteral>(static_cast<int64_t>(it_local->second));
+        if (trace_optimizer) {
+            std::cout << "[OPTIMIZER] Propagated constant for variable '" << node.name 
+                      << "' with value " << it_local->second << std::endl;
+        }
+        return; // Important: exit after transformation
+    }
+    // 2. Keep the existing logic for MANIFEST constants as a fallback.
+    auto it = manifests_.find(node.name);
+    if (it != manifests_.end()) {
+        current_transformed_node_ = std::make_unique<NumberLiteral>(static_cast<int64_t>(it->second));
+        std::cout << "[OPTIMIZER] Folded VariableAccess '" << node.name << "' (MANIFEST) to NumberLiteral: " << it->second << std::endl;
+    }
+}
+
+void ConstantFoldingPass::visit(AssignmentStatement& node) {
+    // First, recursively optimize the right-hand side of the assignment.
+    for (auto& rhs_expr : node.rhs) {
+        rhs_expr = visit_expr(std::move(rhs_expr));
+    }
+
+    // After folding, check if the RHS is a constant literal.
+    // This example handles single assignments like 'x := 10'.
+    if (node.lhs.size() == 1 && node.rhs.size() == 1) {
+        auto* lhs_var = dynamic_cast<VariableAccess*>(node.lhs[0].get());
+        auto* rhs_lit = dynamic_cast<NumberLiteral*>(node.rhs[0].get());
+
+        if (lhs_var) {
+            if (rhs_lit && rhs_lit->literal_type == NumberLiteral::LiteralType::Integer) {
+                // The variable 'lhs_var->name' is now a known constant. Track it.
+                known_constants_[lhs_var->name] = rhs_lit->int_value;
+                if (trace_optimizer) {
+                    std::cout << "[OPTIMIZER] Propagation: Variable '" << lhs_var->name 
+                              << "' is now constant with value " << rhs_lit->int_value << std::endl;
+                }
+            } else {
+                // The variable is being assigned a non-constant value.
+                // We must remove it from our tracking map if it was there before.
+                known_constants_.erase(lhs_var->name);
+            }
+        }
+    }
+
+    // DO NOT visit the LHS for any expressions. The LHS is a target,
+    // not a value to be folded. The loop that was here has been removed.
 }
 
 void ConstantFoldingPass::visit(ForStatement& node) {

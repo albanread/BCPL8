@@ -1,5 +1,7 @@
 #pragma once
 
+#include "AST.h"
+
 // Forward declarations of AST node classes
 class Program;
 class LetDeclaration;
@@ -20,6 +22,7 @@ class UnaryOp;
 class VectorAccess;
 class CharIndirection;
 class FloatVectorIndirection;
+class BitfieldAccessExpression;
 class FunctionCall;
 class SysCall;
 class ConditionalExpression;
@@ -27,6 +30,7 @@ class ValofExpression;
 class FloatValofExpression;
 class VecAllocationExpression;
 class StringAllocationExpression;
+class FVecAllocationExpression;
 class TableExpression;
 class AssignmentStatement;
 class RoutineCallStatement;
@@ -84,14 +88,18 @@ public:
     virtual void visit(VectorAccess& node) {}
     virtual void visit(CharIndirection& node) {}
     virtual void visit(FloatVectorIndirection& node) {}
+    virtual void visit(BitfieldAccessExpression& node) {}
     virtual void visit(FunctionCall& node) {}
     virtual void visit(SysCall& node) {}
     virtual void visit(ConditionalExpression& node) {}
     virtual void visit(ValofExpression& node) {}
     virtual void visit(FloatValofExpression& node) {}
     virtual void visit(VecAllocationExpression& node) {}
+    virtual void visit(VecInitializerExpression& node) {}
+    virtual void visit(FVecAllocationExpression& node) {}
     virtual void visit(StringAllocationExpression& node) {}
     virtual void visit(TableExpression& node) {}
+    virtual void visit(ListExpression& node) {}
 
     // --- Statements ---
     virtual void visit(AssignmentStatement& node) {}
@@ -103,6 +111,7 @@ public:
     virtual void visit(UntilStatement& node) {}
     virtual void visit(RepeatStatement& node) {}
     virtual void visit(ForStatement& node) {}
+    virtual void visit(ForEachStatement& node) {}
     virtual void visit(SwitchonStatement& node) {}
     virtual void visit(CaseStatement& node) {}
     virtual void visit(DefaultStatement& node) {}

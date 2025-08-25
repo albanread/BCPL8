@@ -1,6 +1,8 @@
 #ifndef ENCODER_H
 #define ENCODER_H
 
+#include <sstream>
+
 // Add this enum class somewhere visible to the Instruction struct,
 // for example, near the top of Encoder.h.
 enum class ConditionCode {
@@ -44,6 +46,11 @@ enum class RelocationType {
   MOVZ_MOVK_IMM_16,           // For MOVZ/MOVK with shift 16
   MOVZ_MOVK_IMM_32,           // For MOVZ/MOVK with shift 32
   MOVZ_MOVK_IMM_48,           // For MOVZ/MOVK with shift 48
+
+  // --- Added for absolute 64-bit address relocations ---
+  ABSOLUTE_ADDRESS_LO32,      // Lower 32 bits of a 64-bit absolute address
+  ABSOLUTE_ADDRESS_HI32,      // Upper 32 bits of a 64-bit absolute address
+
   Jump,                       // For jump instructions
   Label                       // For label definitions
 };
@@ -56,6 +63,25 @@ struct Instruction {
   std::string assembly_text;
   size_t address = 0;
   RelocationType relocation = RelocationType::NONE;
+
+  // ** ADD THESE NEW STATIC METHODS **
+  static Instruction as_label(const std::string& label_name, SegmentType segment) {
+      Instruction instr;
+      instr.is_label_definition = true;
+      instr.target_label = label_name;
+      instr.segment = segment;
+      return instr;
+  }
+
+  static Instruction as_relocatable_data(const std::string& target_label, SegmentType segment) {
+      Instruction instr;
+      instr.is_data_value = true;
+      instr.relocation = RelocationType::Label; // Use for absolute 64-bit pointers
+      instr.target_label = target_label;
+      instr.segment = segment;
+      instr.encoding = 0; // The Linker will patch this with the final address.
+      return instr;
+  }
   std::string target_label;
   bool is_data_value = false;
   bool is_label_definition = false;
@@ -115,6 +141,7 @@ public:
     
 
   /**
+
    * @brief Creates a MOV (Move Immediate) instruction. Moves an immediate value
    * into a register.
    * @param xd The destination register.
@@ -156,6 +183,50 @@ public:
                                         const std::string &xn, int immediate);
 
   /**
+   * @brief Creates an STR (Store 128-bit Vector Register) instruction.
+   * Stores one 128-bit vector register (Q/V).
+   * Example: STR Q8, [X29, #imm]
+   */
+  static Instruction create_str_vec_imm(const std::string &qt,
+                                        const std::string &xn, int immediate,
+                                        const std::string &variable_name = "") {
+    // ARM64 encoding for STR Qn, [Xn, #imm]
+    // For now, just emit the assembly text and leave encoding as 0.
+    std::ostringstream oss;
+    oss << "STR " << qt << ", [" << xn << ", #" << immediate << "]";
+    if (!variable_name.empty()) {
+      oss << " ; spill " << variable_name;
+    }
+    Instruction instr(0, oss.str());
+    instr.is_mem_op = true;
+    instr.uses_immediate = true;
+    instr.immediate = immediate;
+    return instr;
+  }
+
+  /**
+   * @brief Creates an LDR (Load 128-bit Vector Register) instruction.
+   * Loads one 128-bit vector register (Q/V).
+   * Example: LDR Q8, [X29, #imm]
+   */
+  static Instruction create_ldr_vec_imm(const std::string &qt,
+                                        const std::string &xn, int immediate,
+                                        const std::string &variable_name = "") {
+    // ARM64 encoding for LDR Qn, [Xn, #imm]
+    // For now, just emit the assembly text and leave encoding as 0.
+    std::ostringstream oss;
+    oss << "LDR " << qt << ", [" << xn << ", #" << immediate << "]";
+    if (!variable_name.empty()) {
+      oss << " ; reload " << variable_name;
+    }
+    Instruction instr(0, oss.str());
+    instr.is_mem_op = true;
+    instr.uses_immediate = true;
+    instr.immediate = immediate;
+    return instr;
+  }
+
+  /**
    * @brief Checks if the given immediate value can be encoded for the given ALU opcode.
    * Delegates ARM64-specific immediate encoding rules to the Encoder.
    * @param opcode The ALU operation type (e.g., ADD, SUB, AND, ORR, EOR).
@@ -163,6 +234,14 @@ public:
    * @return true if the immediate can be encoded for the given opcode, false otherwise.
    */
   static bool canEncodeAsImmediate(InstructionDecoder::OpType opcode, int64_t immediate);
+
+  /**
+   * @brief Creates an MVN (Move with NOT) instruction, which is an alias for ORN with XZR.
+   * @param xd The destination register.
+   * @param xm The source register to be bitwise NOT-ed.
+   * @return A complete Instruction object.
+   */
+  static Instruction create_mvn_reg(const std::string& xd, const std::string& xm);
 
   /**
    * @brief Creates an STR (Store Register) instruction. Stores one 64-bit
@@ -177,7 +256,8 @@ public:
    * register.
    */
   static Instruction create_ldr_imm(const std::string &xt,
-                                    const std::string &xn, int immediate);
+                                    const std::string &xn, int immediate,
+                                    const std::string &variable_name = "");
 
   /**
    * @brief Creates an LDRB (Load Register Byte) instruction. Loads one byte
@@ -434,6 +514,9 @@ public:
   static Instruction create_cmp_reg(const std::string &xn,
                                     const std::string &xm);
 
+  // FSQRT (Floating-point Square Root) instruction for D registers
+  static Instruction create_fsqrt_reg(const std::string& dd, const std::string& dn);
+
   /**
    * @brief Creates a CSET (Conditional Set) instruction for EQ condition. (Xd =
    * 1 if Z=1, else 0)
@@ -520,6 +603,17 @@ public:
    * @return A complete Instruction object.
    */
   static Instruction create_lsr_reg(const std::string &xd,
+                                    const std::string &xn,
+                                    const std::string &xm);
+
+  /**
+   * @brief Creates a BIC (Bit Clear) instruction. (Xd = Xn & ~Xm)
+   * @param xd The destination register.
+   * @param xn The first source register.
+   * @param xm The second source register (mask).
+   * @return A complete Instruction object.
+   */
+  static Instruction create_bic_reg(const std::string &xd,
                                     const std::string &xn,
                                     const std::string &xm);
 
@@ -655,6 +749,15 @@ public:
   static Instruction create_fcvtzs_reg(const std::string &xd,
                                        const std::string &dn);
 
+  // FNEG (Floating-point Negate) instruction for D registers
+  static Instruction create_fneg_reg(const std::string& dd, const std::string& dn);
+
+
+  // FCVTMS (Floating-point Convert to Signed integer, round toward Minus infinity)
+  static Instruction create_fcvtms_reg(const std::string &xd,
+                                       const std::string &dn);
+
+
   /**
    * @brief Creates an LDR instruction to load a double-precision register from
    * memory.
@@ -688,6 +791,15 @@ public:
   static Instruction create_add_literal(const std::string &xd,
                                         const std::string &xn,
                                         const std::string &label_name);
+
+  /**
+   * @brief Creates an ADR instruction. Loads the address of a label into a register.
+   * @param xd The destination register.
+   * @param label_name The target label.
+   * @return A complete Instruction object with relocation info.
+   */
+  static Instruction create_adr(const std::string &xd,
+                                const std::string &label_name);
 
   // --- NEON / SIMD Instructions ---
 
@@ -823,6 +935,7 @@ public:
   static Instruction opt_create_eor_imm(const std::string& xd, const std::string& xn, int64_t immediate);
   static Instruction opt_create_ubfx(const std::string& xd, const std::string& xn, int lsb, int width);
   static Instruction opt_create_sbfx(const std::string& xd, const std::string& xn, int lsb, int width);
+  static Instruction opt_create_bfi(const std::string& xd, const std::string& xn, int lsb, int width);
   static Instruction opt_create_csinv(const std::string& rd, const std::string& rn, const std::string& rm, const std::string& cond);
   static Instruction opt_create_add_shifted_reg(const std::string& rd, const std::string& rn, const std::string& rm, const std::string& shift_type, int shift_amount);
   static Instruction opt_create_fmadd(const std::string& vd, const std::string& vn, const std::string& vm, const std::string& va);

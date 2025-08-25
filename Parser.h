@@ -32,6 +32,7 @@ private:
     bool trace_enabled_;
     int trace_depth_ = 0;
     bool fatal_error_ = false;
+    std::vector<std::string> errors_; // New member to store errors
 
     // --- Core Parser Methods ---
     void advance();
@@ -41,7 +42,10 @@ private:
     bool is_at_end() const;
     void error(const std::string& message);
     void synchronize();
-    bool is_expression_start() const;
+
+public:
+    // ... existing methods ...
+    const std::vector<std::string>& getErrors() const { return errors_; }
 
     // --- Statement Parsers ---
     // Statements
@@ -53,9 +57,17 @@ private:
     StmtPtr parse_while_statement();
     StmtPtr parse_until_statement();
     StmtPtr parse_for_statement();
+    StmtPtr parse_repeat_statement();
+    StmtPtr parse_foreach_statement();
+
+    // --- Expression Parsers ---
+    ExprPtr parse_list_expression();
+    ExprPtr parse_list_expression(bool is_manifest);
+    ExprPtr parse_vec_initializer_expression();
     StmtPtr parse_switchon_statement();
     StmtPtr parse_goto_statement();
     StmtPtr parse_free_statement();
+    StmtPtr parse_free_list_statement();
     StmtPtr parse_return_statement();
     StmtPtr parse_finish_statement();
     StmtPtr parse_break_statement();
@@ -72,6 +84,7 @@ private:
     ExprPtr parse_expression(int precedence = 0);
     ExprPtr parse_unary_expression();
     ExprPtr parse_primary_expression();
+    ExprPtr parse_table_expression(bool is_float_table);
     ExprPtr parse_grouped_expression();
     ExprPtr parse_valof_expression();
     ExprPtr parse_fvalof_expression();
@@ -110,7 +123,6 @@ private:
         TraceGuard(Parser& parser, const std::string& name);
         ~TraceGuard();
     private:
-        bool is_expression_start() const;
         Parser& parser_;
     };
 };

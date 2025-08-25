@@ -13,6 +13,19 @@ std::vector<Instruction> CallFrameManager::generate_prologue() {
 
     debug_print("Starting prologue generation.");
 
+    // --- ADD THIS NEW BLOCK ---
+    if (uses_global_pointers_) {
+        debug_print("Function uses global pointers. Forcing save of X19 and X28.");
+        // Unconditionally add X19 and X28 to the save list if they aren't already there.
+        if (std::find(callee_saved_registers_to_save.begin(), callee_saved_registers_to_save.end(), "X19") == callee_saved_registers_to_save.end()) {
+            callee_saved_registers_to_save.push_back("X19");
+        }
+        if (std::find(callee_saved_registers_to_save.begin(), callee_saved_registers_to_save.end(), "X28") == callee_saved_registers_to_save.end()) {
+            callee_saved_registers_to_save.push_back("X28");
+        }
+    }
+    // --- END OF NEW BLOCK ---
+
     // Sort registers to ensure a consistent stack layout.
     std::sort(callee_saved_registers_to_save.begin(), callee_saved_registers_to_save.end());
     debug_print("Sorted callee_saved_registers_to_save.");
@@ -77,9 +90,6 @@ std::vector<Instruction> CallFrameManager::generate_prologue() {
     for (const auto& reg : this->callee_saved_registers_to_save) {
         int offset = variable_offsets.at(reg);
         Instruction instr = Encoder::create_str_imm(reg, "X29", offset);
-        if (reg == "X19" || reg == "X20") {
-            instr.assembly_text += " ; [JIT_STORE]";
-        }
         instr.assembly_text += " ; Saved Reg: " + reg + " @ FP+" + std::to_string(offset);
         prologue_code.push_back(instr);
     }

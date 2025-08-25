@@ -20,6 +20,9 @@ public:
     // Checks if a label corresponds to a runtime routine
     bool is_runtime_label(const std::string& label_name) const;
 
+    // Resets all defined labels and the label counter
+    void reset();
+
 
 
     // Creates a new unique label name.

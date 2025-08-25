@@ -3,11 +3,18 @@
 #include <iostream>
 #include <sstream>
 
-InstructionStream::InstructionStream(LabelManager& label_manager)
-    : label_manager_(label_manager) {}
+InstructionStream::InstructionStream(LabelManager& label_manager, bool trace_enabled)
+    : label_manager_(label_manager), trace_enabled_(trace_enabled) {}
 
 // CORRECTED: This method is now "dumb" and does not set any address.
 void InstructionStream::add(const Instruction& instr) {
+    // --- ADD THIS TRACE ---
+    if (trace_enabled_ && instr.is_label_definition) {
+        std::cout << "[InstructionStream TRACE] Adding label definition: "
+                  << instr.target_label << std::endl;
+    }
+    // --- END TRACE ---
+
     instructions_.push_back(instr);
     // Set the address on the new copy that is now inside the vector
     instructions_.back().address = 0;
@@ -56,9 +63,10 @@ void InstructionStream::add_data64(uint64_t data, const std::string& label_name,
     quad_instr.assembly_text = ss.str();
     quad_instr.is_data_value = true;
     quad_instr.segment = segment;
+    // Only define a label if explicitly requested (e.g., for the base label).
     if (!label_name.empty()) {
         quad_instr.target_label = label_name;
-        quad_instr.is_label_definition = true; // Ensure label is defined for linker
+        // quad_instr.is_label_definition = true; // <-- REMOVED to ensure data instructions are not label definitions
     }
     add(quad_instr);
 

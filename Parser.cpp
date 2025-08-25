@@ -215,6 +215,12 @@ DeclPtr Parser::parse_function_or_routine_body(const std::string& name, std::vec
         return std::make_unique<FunctionDeclaration>(name, std::move(params), std::move(body));
     }
     if (match(TokenType::Be)) {
+        // DEVELOPER NOTE:
+        // The keyword `ROUTINE` does not exist in the BCPL source language.
+        // This rule parses the `LET name() BE <statement>` syntax and creates an
+        // internal `RoutineDeclaration` AST node. This distinction between the
+        // source syntax and the compiler's internal representation is important
+        // to avoid confusion.
         // Routine without a return value (body is a statement).
         auto body = parse_statement();
         return std::make_unique<RoutineDeclaration>(name, std::move(params), std::move(body));
@@ -249,7 +255,11 @@ void Parser::consume(TokenType expected, const std::string& error_message) {
         advance();
         return;
     }
-    error(error_message);
+    // New, more informative error generation
+    std::string detailed_message = "Expected token " + to_string(expected) +
+                                   " but got " + to_string(current_token_.type) +
+                                   ". " + error_message;
+    error(detailed_message); // Call our enhanced error method
     throw std::runtime_error("Parsing error.");
 }
 
@@ -266,6 +276,7 @@ void Parser::error(const std::string& message) {
     std::string error_msg = "[L" + std::to_string(previous_token_.line) +
                             " C" + std::to_string(previous_token_.column) +
                             "] Error: " + message;
+    errors_.push_back(error_msg); // Accumulate error messages
     LexerTrace(error_msg);
     fatal_error_ = true;
 }

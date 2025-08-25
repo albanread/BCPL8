@@ -10,8 +10,8 @@
 // It also interacts with the LabelManager to define labels at specific points.
 class InstructionStream {
 public:
-    // Constructor takes a reference to the LabelManager
-    InstructionStream(LabelManager& label_manager);
+    // Constructor takes a reference to the LabelManager and an optional trace flag
+    InstructionStream(LabelManager& label_manager, bool trace_enabled = false);
 
     // Adds an instruction to the stream.
     void add(const Instruction& instr);
@@ -64,6 +64,7 @@ public:
 private:
     std::vector<Instruction> instructions_;
     LabelManager& label_manager_;
+    bool trace_enabled_;
 };
 
 #endif // INSTRUCTION_STREAM_H

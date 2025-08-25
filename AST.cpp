@@ -31,6 +31,22 @@ void SysCall::accept(ASTVisitor& visitor) {
     visitor.visit(*this);
 }
 
+void VecInitializerExpression::accept(ASTVisitor& visitor) {
+    visitor.visit(*this);
+}
+
+ASTNodePtr VecInitializerExpression::clone() const {
+    std::vector<ExprPtr> cloned_initializers;
+    for (const auto& expr : initializers) {
+        if (expr) {
+            cloned_initializers.push_back(std::unique_ptr<Expression>(static_cast<Expression*>(expr->clone().release())));
+        } else {
+            cloned_initializers.push_back(nullptr);
+        }
+    }
+    return std::make_unique<VecInitializerExpression>(std::move(cloned_initializers));
+}
+
 ASTNodePtr SysCall::clone() const {
     // Create a new vector for the cloned arguments.
     std::vector<ExprPtr> cloned_args;
@@ -53,6 +69,21 @@ void FloatValofExpression::accept(ASTVisitor& visitor) {
 ASTNodePtr FloatValofExpression::clone() const {
     return std::make_unique<FloatValofExpression>(
         body ? std::unique_ptr<Statement>(static_cast<Statement*>(body->clone().release())) : nullptr
+    );
+}
+
+// --- Implement accept and clone for ForEachStatement ---
+void ForEachStatement::accept(ASTVisitor& visitor) {
+    visitor.visit(*this);
+}
+
+ASTNodePtr ForEachStatement::clone() const {
+    return std::make_unique<ForEachStatement>(
+        loop_variable_name,
+        type_variable_name,
+        collection_expression ? std::unique_ptr<Expression>(static_cast<Expression*>(collection_expression->clone().release())) : nullptr,
+        body ? std::unique_ptr<Statement>(static_cast<Statement*>(body->clone().release())) : nullptr,
+        filter_type
     );
 }
 
@@ -86,6 +117,7 @@ ACCEPT_METHOD_IMPL(VectorAccess)
 ACCEPT_METHOD_IMPL(CharIndirection)
 ACCEPT_METHOD_IMPL(FloatVectorIndirection)
 ACCEPT_METHOD_IMPL(FunctionCall)
+ACCEPT_METHOD_IMPL(BitfieldAccessExpression)
 ACCEPT_METHOD_IMPL(ConditionalExpression)
 ACCEPT_METHOD_IMPL(ValofExpression)
 
@@ -114,8 +146,16 @@ ACCEPT_METHOD_IMPL(CompoundStatement)
 ACCEPT_METHOD_IMPL(BlockStatement)
 ACCEPT_METHOD_IMPL(StringStatement)
 ACCEPT_METHOD_IMPL(VecAllocationExpression)
+ACCEPT_METHOD_IMPL(FVecAllocationExpression)
 ACCEPT_METHOD_IMPL(StringAllocationExpression)
 ACCEPT_METHOD_IMPL(TableExpression)
+
+ASTNodePtr FVecAllocationExpression::clone() const {
+    // Deep clone the size expression and copy the variable name
+    return std::make_unique<FVecAllocationExpression>(
+        size_expr ? std::unique_ptr<Expression>(static_cast<Expression*>(size_expr->clone().release())) : nullptr
+    );
+}
 
 ACCEPT_METHOD_IMPL(LabelTargetStatement)
 
@@ -128,6 +168,24 @@ ASTNodePtr BrkStatement::clone() const {
 }
 
 #undef ACCEPT_METHOD_IMPL
+
+// --- Implement accept and clone for ListExpression ---
+void ListExpression::accept(ASTVisitor& visitor) {
+    visitor.visit(*this);
+}
+
+ASTNodePtr ListExpression::clone() const {
+    std::vector<ExprPtr> cloned_initializers;
+    for (const auto& expr : initializers) {
+        cloned_initializers.push_back(expr ? std::unique_ptr<Expression>(static_cast<Expression*>(expr->clone().release())) : nullptr);
+    }
+    auto node = std::make_unique<ListExpression>(std::move(cloned_initializers), is_manifest);
+    return node;
+}
+#undef ACCEPT_METHOD_IMPL
+
+// --- Implement accept and clone for FreeListStatement ---
+
 
 // --- Implement clone for GlobalVariableDeclaration --- //
 ASTNodePtr GlobalVariableDeclaration::clone() const {

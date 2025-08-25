@@ -57,4 +57,9 @@ bool LabelManager::is_label_defined(const std::string& label_name) const {
     return defined_labels_.count(label_name) > 0;
 }
 
+void LabelManager::reset() {
+    defined_labels_.clear();
+    next_label_id_ = 0;
+}
+
 

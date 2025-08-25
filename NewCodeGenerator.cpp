@@ -17,6 +17,15 @@
 #include <map>        // For std::map
 #include <stack>      // For std::stack
 #include "analysis/LiveInterval.h"
+#include "runtime/ListDataTypes.h"
+#include "RuntimeManager.h"
+
+// Empty visitor for ForEachStatement (CFGBuilderPass lowers this to simpler nodes)
+void NewCodeGenerator::visit(ForEachStatement& node) {
+    // No codegen needed here.
+}
+
+
 
 
 
@@ -31,7 +40,8 @@ NewCodeGenerator::NewCodeGenerator(InstructionStream& instruction_stream,
                                    DataGenerator& data_generator,
                                    uint64_t data_base_addr,
                                    const CFGBuilderPass& cfg_builder,
-                                   std::unique_ptr<SymbolTable> symbol_table)
+                                   std::unique_ptr<SymbolTable> symbol_table,
+                                   bool is_jit_mode)
     : instruction_stream_(instruction_stream),
       register_manager_(register_manager),
       label_manager_(label_manager),
@@ -40,9 +50,92 @@ NewCodeGenerator::NewCodeGenerator(InstructionStream& instruction_stream,
       data_generator_(data_generator),
       data_segment_base_addr_(data_base_addr),
       cfg_builder_(cfg_builder),
-      symbol_table_(std::move(symbol_table)) {
+      symbol_table_(std::move(symbol_table)),
+      is_jit_mode_(is_jit_mode) {
     x28_is_loaded_in_current_function_ = false;
+    // Set the symbol table pointer in DataGenerator for offset propagation
+    data_generator_.set_symbol_table(symbol_table_.get());
 }
+
+// X19-relative scalable access helpers for runtime tables (now as private member functions)
+void NewCodeGenerator::emit_x19_relative_ldr(const std::string& dest_reg, size_t byte_offset, const std::string& comment) {
+    if (byte_offset <= MAX_LDR_OFFSET) {
+        emit(Encoder::create_ldr_imm(dest_reg, "X19", byte_offset, comment));
+    } else {
+        std::string offset_reg = register_manager_.acquire_scratch_reg(*this);
+        std::string addr_reg = register_manager_.acquire_scratch_reg(*this);
+        emit(Encoder::create_movz_movk_abs64(offset_reg, byte_offset, ""));
+        emit(Encoder::create_add_reg(addr_reg, "X19", offset_reg));
+        emit(Encoder::create_ldr_imm(dest_reg, addr_reg, 0, comment));
+        register_manager_.release_register(offset_reg);
+        register_manager_.release_register(addr_reg);
+    }
+}
+void NewCodeGenerator::emit_x19_relative_str(const std::string& src_reg, size_t byte_offset, const std::string& comment) {
+    if (byte_offset <= MAX_LDR_OFFSET) {
+        emit(Encoder::create_str_imm(src_reg, "X19", byte_offset, comment));
+    } else {
+        std::string offset_reg = register_manager_.acquire_scratch_reg(*this);
+        std::string addr_reg = register_manager_.acquire_scratch_reg(*this);
+        emit(Encoder::create_movz_movk_abs64(offset_reg, byte_offset, ""));
+        emit(Encoder::create_add_reg(addr_reg, "X19", offset_reg));
+        emit(Encoder::create_str_imm(src_reg, addr_reg, 0, comment));
+        register_manager_.release_register(offset_reg);
+        register_manager_.release_register(addr_reg);
+    }
+}
+
+// --- BitfieldAccessExpression codegen (read) ---
+void NewCodeGenerator::visit(BitfieldAccessExpression& node) {
+    debug_print("Visiting BitfieldAccessExpression node (Read).");
+
+    auto* start_lit = dynamic_cast<NumberLiteral*>(node.start_bit_expr.get());
+    auto* width_lit = dynamic_cast<NumberLiteral*>(node.width_expr.get());
+
+    // Optimized Path: Use UBFX if start and width are constants.
+    if (start_lit && width_lit) {
+        generate_expression_code(*node.base_expr);
+        std::string word_reg = expression_result_reg_;
+        std::string dest_reg = register_manager_.acquire_scratch_reg(*this);
+
+        emit(Encoder::opt_create_ubfx(dest_reg, word_reg,
+                                      start_lit->int_value, width_lit->int_value));
+                                      
+        expression_result_reg_ = dest_reg;
+        register_manager_.release_register(word_reg);
+
+    } else {
+        // Fallback Path: For variable start/width, use the manual shift-and-mask.
+        generate_expression_code(*node.base_expr);
+        std::string word_reg = expression_result_reg_;
+
+        generate_expression_code(*node.start_bit_expr);
+        std::string start_reg = expression_result_reg_;
+        
+        generate_expression_code(*node.width_expr);
+        std::string width_reg = expression_result_reg_;
+
+        std::string shifted_reg = register_manager_.acquire_scratch_reg(*this);
+        std::string mask_reg = register_manager_.acquire_scratch_reg(*this);
+        std::string one_reg = register_manager_.acquire_scratch_reg(*this);
+
+        emit(Encoder::create_lsr_reg(shifted_reg, word_reg, start_reg));
+        emit(Encoder::create_movz_imm(one_reg, 1));
+        emit(Encoder::create_lsl_reg(mask_reg, one_reg, width_reg));
+        emit(Encoder::create_sub_imm(mask_reg, mask_reg, 1));
+        emit(Encoder::create_and_reg(shifted_reg, shifted_reg, mask_reg));
+
+        expression_result_reg_ = shifted_reg;
+
+        register_manager_.release_register(word_reg);
+        register_manager_.release_register(start_reg);
+        register_manager_.release_register(width_reg);
+        register_manager_.release_register(mask_reg);
+        register_manager_.release_register(one_reg);
+    }
+}
+
+
 
 // Look up a symbol in the symbol table
 void NewCodeGenerator::visit(BinaryOp& node) {
@@ -59,61 +152,133 @@ void NewCodeGenerator::visit(BinaryOp& node) {
         return;
     }
 
-    // For all other binary operations, use the standard approach
+    // --- START NEW LOGIC FOR MIXED-TYPES ---
+    // First, recursively determine the type of each sub-expression.
+    VarType left_type = ASTAnalyzer::getInstance().infer_expression_type(node.left.get());
+    VarType right_type = ASTAnalyzer::getInstance().infer_expression_type(node.right.get());
+
+    // 1. Evaluate the RIGHT side of the expression first.
+    generate_expression_code(*node.right);
+    std::string right_reg = expression_result_reg_;
+
+    // 2. Evaluate the LEFT side.
     generate_expression_code(*node.left);
     std::string left_reg = expression_result_reg_;
 
-    generate_expression_code(*node.right);
-    std::string right_reg = expression_result_reg_;
+    // Check if a type promotion is needed.
+    if (left_type == VarType::FLOAT && right_type == VarType::INTEGER) {
+        // Promote right operand from Integer (in an X register) to Float (in a D register).
+        std::string fp_reg = register_manager_.acquire_fp_scratch_reg();
+        emit(Encoder::create_scvtf_reg(fp_reg, right_reg)); // SCVTF instruction
+        register_manager_.release_register(right_reg);
+        right_reg = fp_reg; // The right operand is now in a float register.
+    } else if (left_type == VarType::INTEGER && right_type == VarType::FLOAT) {
+        // Promote left operand.
+        std::string fp_reg = register_manager_.acquire_fp_scratch_reg();
+        emit(Encoder::create_scvtf_reg(fp_reg, left_reg));
+        register_manager_.release_register(left_reg);
+        left_reg = fp_reg; // The left operand is now in a float register.
+    }
+    // --- END NEW LOGIC ---
+
+    bool is_float_op = (left_type == VarType::FLOAT || right_type == VarType::FLOAT);
 
     // Handle different binary operators
     switch (node.op) {
         case BinaryOp::Operator::Add:
-            emit(Encoder::create_add_reg(left_reg, left_reg, right_reg));
+            if (is_float_op) {
+                emit(Encoder::create_fadd_reg(left_reg, left_reg, right_reg));
+            } else {
+                emit(Encoder::create_add_reg(left_reg, left_reg, right_reg));
+            }
             break;
         case BinaryOp::Operator::Subtract:
-            emit(Encoder::create_sub_reg(left_reg, left_reg, right_reg));
+            if (is_float_op) {
+                emit(Encoder::create_fsub_reg(left_reg, left_reg, right_reg));
+            } else {
+                emit(Encoder::create_sub_reg(left_reg, left_reg, right_reg));
+            }
             break;
         case BinaryOp::Operator::Multiply:
-            emit(Encoder::create_mul_reg(left_reg, left_reg, right_reg));
+            if (is_float_op) {
+                emit(Encoder::create_fmul_reg(left_reg, left_reg, right_reg));
+            } else {
+                emit(Encoder::create_mul_reg(left_reg, left_reg, right_reg));
+            }
             break;
         case BinaryOp::Operator::Divide:
-            emit(Encoder::create_sdiv_reg(left_reg, left_reg, right_reg));
+            if (is_float_op) {
+                emit(Encoder::create_fdiv_reg(left_reg, left_reg, right_reg));
+            } else {
+                emit(Encoder::create_sdiv_reg(left_reg, left_reg, right_reg));
+            }
             break;
         case BinaryOp::Operator::Remainder:
-            // First perform division
+            // Only valid for integer types
             emit(Encoder::create_sdiv_reg("X16", left_reg, right_reg)); // Temporary register X16
-            // Then multiply quotient * divisor
             emit(Encoder::create_mul_reg("X16", "X16", right_reg));
-            // Finally subtract to get remainder
             emit(Encoder::create_sub_reg(left_reg, left_reg, "X16"));
             break;
         case BinaryOp::Operator::Equal:
-            emit(Encoder::create_cmp_reg(left_reg, right_reg));
-            emit(Encoder::create_cset_eq(left_reg));
+            if (is_float_op) {
+                emit(Encoder::create_fcmp_reg(left_reg, right_reg));
+                emit(Encoder::create_cset_eq(left_reg));
+            } else {
+                emit(Encoder::create_cmp_reg(left_reg, right_reg));
+                emit(Encoder::create_cset_eq(left_reg));
+            }
             break;
         case BinaryOp::Operator::NotEqual:
-            emit(Encoder::create_cmp_reg(left_reg, right_reg));
-            emit(Encoder::create_csetm_ne(left_reg));
+            if (is_float_op) {
+                emit(Encoder::create_fcmp_reg(left_reg, right_reg));
+                emit(Encoder::create_csetm_ne(left_reg));
+            } else {
+                emit(Encoder::create_cmp_reg(left_reg, right_reg));
+                emit(Encoder::create_csetm_ne(left_reg));
+            }
             break;
         case BinaryOp::Operator::Less:
-            emit(Encoder::create_cmp_reg(left_reg, right_reg));
-            emit(Encoder::create_cset(left_reg, "LT"));
+            if (is_float_op) {
+                emit(Encoder::create_fcmp_reg(left_reg, right_reg));
+                emit(Encoder::create_cset(left_reg, "LT"));
+            } else {
+                emit(Encoder::create_cmp_reg(left_reg, right_reg));
+                emit(Encoder::create_cset(left_reg, "LT"));
+            }
             break;
         case BinaryOp::Operator::LessEqual:
-            emit(Encoder::create_cmp_reg(left_reg, right_reg));
-            emit(Encoder::create_cset(left_reg, "LE"));
+            if (is_float_op) {
+                emit(Encoder::create_fcmp_reg(left_reg, right_reg));
+                emit(Encoder::create_cset(left_reg, "LE"));
+            } else {
+                emit(Encoder::create_cmp_reg(left_reg, right_reg));
+                emit(Encoder::create_cset(left_reg, "LE"));
+            }
             break;
         case BinaryOp::Operator::Greater:
-            emit(Encoder::create_cmp_reg(left_reg, right_reg));
-            emit(Encoder::create_cset(left_reg, "GT"));
+            if (is_float_op) {
+                emit(Encoder::create_fcmp_reg(left_reg, right_reg));
+                emit(Encoder::create_cset(left_reg, "GT"));
+            } else {
+                emit(Encoder::create_cmp_reg(left_reg, right_reg));
+                emit(Encoder::create_cset(left_reg, "GT"));
+            }
             break;
         case BinaryOp::Operator::GreaterEqual:
-            emit(Encoder::create_cmp_reg(left_reg, right_reg));
-            emit(Encoder::create_cset(left_reg, "GE"));
+            if (is_float_op) {
+                emit(Encoder::create_fcmp_reg(left_reg, right_reg));
+                emit(Encoder::create_cset(left_reg, "GE"));
+            } else {
+                emit(Encoder::create_cmp_reg(left_reg, right_reg));
+                emit(Encoder::create_cset(left_reg, "GE"));
+            }
+            break;
+        case BinaryOp::Operator::BitwiseAnd:
+            emit(Encoder::create_and_reg(left_reg, left_reg, right_reg));
             break;
         case BinaryOp::Operator::LogicalAnd:
-            emit(Encoder::create_and_reg(left_reg, left_reg, right_reg));
+            // Short-circuit logic for logical AND should be handled here
+            generate_short_circuit_and(node);
             break;
         case BinaryOp::Operator::LogicalOr:
             emit(Encoder::create_orr_reg(left_reg, left_reg, right_reg));
@@ -335,11 +500,13 @@ void NewCodeGenerator::performLinearScan(const std::string& functionName, const 
         // Make sure the variable is registered with the frame manager
         if (!current_frame_manager_->has_local(interval.var_name)) {
             debug_print("WARNING: Variable " + interval.var_name + " not registered in frame manager. Adding it.");
-            current_frame_manager_->add_local(interval.var_name);
+            // Default to INTEGER if type is unknown
+            VarType type = ASTAnalyzer::getInstance().get_variable_type(current_function_name_, interval.var_name);
+            current_frame_manager_->add_local(interval.var_name, type);
         }
 
         // Determine if this variable is a float
-        VarType var_type = ASTAnalyzer::getInstance().get_variable_type(functionName, interval.var_name);
+        VarType var_type = current_frame_manager_->get_variable_type(interval.var_name);
         bool is_float = (var_type == VarType::FLOAT);
 
         // Expire old intervals from appropriate active lists based on their register type
@@ -452,7 +619,7 @@ void NewCodeGenerator::performLinearScan(const std::string& functionName, const 
 
             // If this is a float variable, make sure the register manager knows about it
             if (is_float && current_frame_manager_) {
-                current_frame_manager_->mark_variable_as_float(interval.var_name);
+                current_frame_manager_->set_variable_type(interval.var_name, VarType::FLOAT);
             }
 
             debug_print("Assigned register " + reg + " to " + interval.var_name +
@@ -492,7 +659,7 @@ void NewCodeGenerator::performLinearScan(const std::string& functionName, const 
             }
         } else {
             // Verify type consistency
-            VarType var_type = ASTAnalyzer::getInstance().get_variable_type(functionName, var_name);
+            VarType var_type = current_frame_manager_->get_variable_type(var_name);
             bool is_float = (var_type == VarType::FLOAT);
             bool got_float_reg = (alloc.assigned_register[0] == 'D' || alloc.assigned_register[0] == 'S');
 
@@ -534,7 +701,9 @@ for (auto& [var_name, interval] : current_function_allocation_) {
             } else {
                 // Add it to the frame manager if it's not there
                 debug_print("Adding missing variable '" + var_name + "' to frame manager");
-                current_frame_manager_->add_local(var_name);
+                // Default to INTEGER if type is unknown
+                VarType type = ASTAnalyzer::getInstance().get_variable_type(current_function_name_, var_name);
+                current_frame_manager_->add_local(var_name, type);
 
                 // Now try to get its offset
                 try {
@@ -570,6 +739,7 @@ void NewCodeGenerator::generate_code(Program& program) {
     // This starts the AST traversal.
     visit(program);
     data_generator_.calculate_global_offsets();
+    data_generator_.generate_rodata_section(instruction_stream_);
     debug_print("Code generation finished.");
 }
 
@@ -586,7 +756,7 @@ void NewCodeGenerator::handle_variable_assignment(VariableAccess* var_access, co
     debug_print("Handling assignment for variable: " + var_access->name);
 
     bool is_source_float = register_manager_.is_fp_register(value_to_store_reg);
-    VarType dest_type = ASTAnalyzer::getInstance().get_variable_type(current_function_name_, var_access->name);
+    VarType dest_type = current_frame_manager_->get_variable_type(var_access->name);
     bool is_dest_float = (dest_type == VarType::FLOAT);
 
     std::string final_reg_to_store = value_to_store_reg;
@@ -595,7 +765,7 @@ void NewCodeGenerator::handle_variable_assignment(VariableAccess* var_access, co
     if (is_source_float && !is_dest_float) {
         // Coerce float value to integer
         debug_print("Coercing float value from " + value_to_store_reg + " to integer for variable '" + var_access->name + "'.");
-        std::string int_reg = register_manager_.acquire_scratch_reg();
+        std::string int_reg = register_manager_.acquire_scratch_reg(*this);
         emit(Encoder::create_fcvtzs_reg(int_reg, value_to_store_reg)); // Convert float to signed int
         final_reg_to_store = int_reg;
         reg_was_converted = true;
@@ -632,7 +802,7 @@ void NewCodeGenerator::handle_vector_assignment(VectorAccess* vec_access, const 
     debug_print("Calculated byte offset for vector assignment.");
 
     // 4. Calculate the effective memory address: base + offset
-    std::string effective_addr_reg = register_manager_.get_free_register();
+    std::string effective_addr_reg = register_manager_.get_free_register(*this);
     emit(Encoder::create_add_reg(effective_addr_reg, vector_base_reg, index_reg));
     debug_print("Calculated effective address for vector assignment.");
 
@@ -663,7 +833,7 @@ void NewCodeGenerator::handle_char_indirection_assignment(CharIndirection* char_
     debug_print("Calculated byte offset for char indirection assignment.");
 
     // 4. Calculate the effective memory address: base + offset
-    std::string effective_addr_reg = register_manager_.get_free_register();
+    std::string effective_addr_reg = register_manager_.get_free_register(*this);
     emit(Encoder::create_add_reg(effective_addr_reg, string_base_reg, index_reg));
     debug_print("Calculated effective address for char indirection assignment.");
 
@@ -776,6 +946,9 @@ void NewCodeGenerator::generate_float_to_int_truncation(const std::string& dest_
 
 // --- Variable Access/Storage Helpers ---
 // These methods manage loading values from variables into registers and storing values from registers back to variables.
+
+
+
 std::string NewCodeGenerator::get_variable_register(const std::string& var_name) {
     debug_print("get_variable_register called for: '" + var_name + "'");
 
@@ -785,7 +958,7 @@ std::string NewCodeGenerator::get_variable_register(const std::string& var_name)
 
     // Check for runtime functions that shouldn't be allocated
     if (found_symbol && symbol.is_runtime()) {
-        std::string reg = register_manager_.acquire_scratch_reg();
+        std::string reg = register_manager_.acquire_scratch_reg(*this);
         debug_print("Using scratch register for runtime function: " + var_name);
         return reg;
     }
@@ -801,8 +974,7 @@ std::string NewCodeGenerator::get_variable_register(const std::string& var_name)
             if (found_symbol) {
                 is_float = (symbol.type == VarType::FLOAT);
             } else {
-                // Fall back to ASTAnalyzer if symbol not found
-                VarType var_type = ASTAnalyzer::getInstance().get_variable_type(current_function_name_, var_name);
+                VarType var_type = current_frame_manager_->get_variable_type(var_name);
                 is_float = (var_type == VarType::FLOAT);
             }
 
@@ -820,45 +992,25 @@ std::string NewCodeGenerator::get_variable_register(const std::string& var_name)
             if (allocation.stack_offset != -1) {
                 debug_print("Variable '" + var_name + "' is spilled. Reloading from stack offset: " + std::to_string(allocation.stack_offset));
 
-                // Determine if this is a float variable
-                bool is_float = false;
-                if (found_symbol) {
-                    is_float = (symbol.type == VarType::FLOAT);
-                    debug_print("Variable '" + var_name + "' type determined from symbol table: " +
-                               (is_float ? "float" : "int"));
-                } else {
-                    // Fall back to ASTAnalyzer if symbol not found
-                    VarType var_type = ASTAnalyzer::getInstance().get_variable_type(current_function_name_, var_name);
-                    is_float = (var_type == VarType::FLOAT);
-                    debug_print("Variable '" + var_name + "' type determined from ASTAnalyzer: " +
-                               (is_float ? "float" : "int"));
-                }
+                // Use CallFrameManager VarType to distinguish float value vs pointer
+                VarType var_type = current_frame_manager_->get_variable_type(var_name);
+                debug_print("Variable '" + var_name + "' type from CallFrameManager: " + std::to_string(static_cast<int>(var_type)));
 
-                if (current_frame_manager_) {
-                    // Keep CallFrameManager in sync with our type info
-                    if (is_float && !current_frame_manager_->is_float_variable(var_name)) {
-                        current_frame_manager_->mark_variable_as_float(var_name);
-                        debug_print("Updating CallFrameManager with float type for '" + var_name + "'");
-                    } else if (!is_float && current_frame_manager_->is_float_variable(var_name)) {
-                        // Trust CallFrameManager's type info if it conflicts
-                        debug_print("CallFrameManager indicates '" + var_name + "' is float, using that");
-                        is_float = true;
-                    }
-                }
-
-                if (is_float) {
-                    // Try to get a real float variable register (D8-D15) instead of a scratch register
+                if (var_type == VarType::FLOAT) {
+                    // This is a true float VALUE. Load it into a floating-point register.
                     std::string reg = register_manager_.acquire_spillable_fp_temp_reg(*this);
                     emit(Encoder::create_ldr_fp_imm(reg, "X29", allocation.stack_offset));
                     register_manager_.mark_dirty(reg, false); // Mark register as clean after load
-                    debug_print("Loaded float variable '" + var_name + "' into " + reg + " (callee-saved if possible)");
+                    debug_print("Loaded float VALUE for '" + var_name + "' into " + reg);
                     return reg;
                 } else {
-                    // Try to use a real variable register instead of a scratch register when possible
+                    // This is an INTEGER, a POINTER_TO_INT, or a POINTER_TO_FLOAT_VEC.
+                    // In all these cases, the value being loaded from the stack is an integer-like
+                    // address or value. It MUST be loaded into a general-purpose register.
                     std::string reg = register_manager_.acquire_spillable_temp_reg(*this);
-                    emit(Encoder::create_ldr_imm(reg, "X29", allocation.stack_offset));
+                    emit(Encoder::create_ldr_imm(reg, "X29", allocation.stack_offset, var_name));
                     register_manager_.mark_dirty(reg, false); // Mark register as clean after load
-                    debug_print("Variable '" + var_name + "' value loaded into " + reg);
+                    debug_print("Loaded integer/pointer VALUE for '" + var_name + "' into " + reg);
                     return reg;
                 }
             } else {
@@ -867,45 +1019,25 @@ std::string NewCodeGenerator::get_variable_register(const std::string& var_name)
                 try {
                     int offset = current_frame_manager_->get_offset(var_name);
 
-                    // Determine if this is a float variable
-                    bool is_float = false;
-                    if (found_symbol) {
-                        is_float = (symbol.type == VarType::FLOAT);
-                        debug_print("Variable '" + var_name + "' type determined from symbol table: " +
-                                  (is_float ? "float" : "int"));
-                    } else {
-                        // Fall back to ASTAnalyzer if symbol not found
-                        VarType var_type = ASTAnalyzer::getInstance().get_variable_type(current_function_name_, var_name);
-                        is_float = (var_type == VarType::FLOAT);
-                        debug_print("Variable '" + var_name + "' type determined from ASTAnalyzer: " +
-                                  (is_float ? "float" : "int"));
-                    }
+                    // Use CallFrameManager VarType to distinguish float value vs pointer
+                    VarType var_type = current_frame_manager_->get_variable_type(var_name);
+                    debug_print("Variable '" + var_name + "' type from CallFrameManager: " + std::to_string(static_cast<int>(var_type)));
 
-                    if (current_frame_manager_) {
-                        // Keep CallFrameManager in sync with our type info
-                        if (is_float && !current_frame_manager_->is_float_variable(var_name)) {
-                            current_frame_manager_->mark_variable_as_float(var_name);
-                            debug_print("Updating CallFrameManager with float type for '" + var_name + "'");
-                        } else if (!is_float && current_frame_manager_->is_float_variable(var_name)) {
-                            // Trust CallFrameManager's type info if it conflicts
-                            debug_print("CallFrameManager indicates '" + var_name + "' is float, using that");
-                            is_float = true;
-                        }
-                    }
-
-                    if (is_float) {
-                        // Try to get a real float variable register (D8-D15) instead of a scratch register
+                    if (var_type == VarType::FLOAT) {
+                        // This is a true float VALUE. Load it into a floating-point register.
                         std::string reg = register_manager_.acquire_spillable_fp_temp_reg(*this);
                         emit(Encoder::create_ldr_fp_imm(reg, "X29", offset));
                         register_manager_.mark_dirty(reg, false); // Mark register as clean after load
-                        debug_print("Loaded float variable '" + var_name + "' into " + reg + " (callee-saved if possible)");
+                        debug_print("Loaded float VALUE for '" + var_name + "' into " + reg);
                         return reg;
                     } else {
-                        // Try to use a real variable register instead of a scratch register when possible
+                        // This is an INTEGER, a POINTER_TO_INT, or a POINTER_TO_FLOAT_VEC.
+                        // In all these cases, the value being loaded from the stack is an integer-like
+                        // address or value. It MUST be loaded into a general-purpose register.
                         std::string reg = register_manager_.acquire_spillable_temp_reg(*this);
-                        emit(Encoder::create_ldr_imm(reg, "X29", offset));
+                        emit(Encoder::create_ldr_imm(reg, "X29", offset, var_name));
                         register_manager_.mark_dirty(reg, false); // Mark register as clean after load
-                        debug_print("Variable '" + var_name + "' value loaded into " + reg);
+                        debug_print("Loaded integer/pointer VALUE for '" + var_name + "' into " + reg);
                         return reg;
                     }
                 } catch (const std::runtime_error& e) {
@@ -934,7 +1066,7 @@ std::string NewCodeGenerator::get_variable_register(const std::string& var_name)
                 return reg;
             } else {
                 std::string reg = register_manager_.acquire_spillable_temp_reg(*this);
-                emit(Encoder::create_ldr_imm(reg, "X29", offset));
+                emit(Encoder::create_ldr_imm(reg, "X29", offset, var_name));
                 register_manager_.mark_dirty(reg, false); // Mark register as clean after load
                 return reg;
             }
@@ -953,7 +1085,7 @@ std::string NewCodeGenerator::get_variable_register(const std::string& var_name)
                 return reg;
             } else {
                 std::string reg = register_manager_.acquire_spillable_temp_reg(*this);
-                emit(Encoder::create_ldr_imm(reg, "X28", offset * 8));
+                emit(Encoder::create_ldr_imm(reg, "X28", offset * 8, var_name));
                 register_manager_.mark_dirty(reg, false); // Mark register as clean after load
                 return reg;
             }
@@ -970,6 +1102,9 @@ std::string NewCodeGenerator::get_variable_register(const std::string& var_name)
     }
 
     // Fall back to global variables if not found in symbol table
+    // Support large global offset access (efficient and scalable path)
+    static constexpr size_t MAX_LDR_OFFSET = 4095 * 8; // 32,760 bytes
+
     if (data_generator_.is_global_variable(var_name)) {
         auto& rm = register_manager_;
         std::string reg;
@@ -979,21 +1114,39 @@ std::string NewCodeGenerator::get_variable_register(const std::string& var_name)
         if (found_symbol) {
             var_type = symbol.type;
         } else {
-            // Fall back to ASTAnalyzer
-            var_type = ASTAnalyzer::getInstance().get_variable_type(current_scope_name_, var_name);
+            // Use CallFrameManager for locals/params
+            var_type = current_frame_manager_->get_variable_type(var_name);
         }
 
+        size_t byte_offset = data_generator_.get_global_word_offset(var_name) * 8;
+
         if (var_type == VarType::FLOAT) {
-            // Use a variable register (D8-D15) when possible instead of scratch
             reg = rm.acquire_spillable_fp_temp_reg(*this);
-            size_t byte_offset = data_generator_.get_global_word_offset(var_name) * 8;
-            emit(Encoder::create_ldr_fp_imm(reg, "X28", byte_offset));
+            if (byte_offset <= MAX_LDR_OFFSET) {
+                emit(Encoder::create_ldr_fp_imm(reg, "X28", byte_offset));
+            } else {
+                std::string offset_reg = rm.acquire_scratch_reg(*this);
+                std::string addr_reg = rm.acquire_scratch_reg(*this);
+                emit(Encoder::create_movz_movk_abs64(offset_reg, byte_offset, ""));
+                emit(Encoder::create_add_reg(addr_reg, "X28", offset_reg));
+                emit(Encoder::create_ldr_fp_imm(reg, addr_reg, 0));
+                rm.release_register(offset_reg);
+                rm.release_register(addr_reg);
+            }
             debug_print("Loaded global variable '" + var_name + "' into " + reg + " from X28 + #" + std::to_string(byte_offset));
         } else {
-            // Use a variable register when possible instead of scratch
             reg = rm.acquire_spillable_temp_reg(*this);
-            size_t byte_offset = data_generator_.get_global_word_offset(var_name) * 8;
-            emit(Encoder::create_ldr_imm(reg, "X28", byte_offset));
+            if (byte_offset <= MAX_LDR_OFFSET) {
+                emit(Encoder::create_ldr_imm(reg, "X28", byte_offset, var_name));
+            } else {
+                std::string offset_reg = rm.acquire_scratch_reg(*this);
+                std::string addr_reg = rm.acquire_scratch_reg(*this);
+                emit(Encoder::create_movz_movk_abs64(offset_reg, byte_offset, ""));
+                emit(Encoder::create_add_reg(addr_reg, "X28", offset_reg));
+                emit(Encoder::create_ldr_imm(reg, addr_reg, 0, var_name));
+                rm.release_register(offset_reg);
+                rm.release_register(addr_reg);
+            }
             debug_print("Loaded global variable '" + var_name + "' into " + reg + " from X28 + #" + std::to_string(byte_offset));
         }
         return reg;
@@ -1001,7 +1154,7 @@ std::string NewCodeGenerator::get_variable_register(const std::string& var_name)
 
     // Handle global functions (loading their address) (local?)
     if (ASTAnalyzer::getInstance().is_local_function(var_name)) {
-        std::string reg = register_manager_.get_free_register();
+        std::string reg = register_manager_.get_free_register(*this);
         emit(Encoder::create_adrp(reg, var_name));
         emit(Encoder::create_add_literal(reg, reg, var_name));
         debug_print("Loaded address of global function '" + var_name + "' into " + reg + ".");
@@ -1063,31 +1216,27 @@ void NewCodeGenerator::store_variable_register(const std::string& var_name, cons
                         debug_print("Variable '" + var_name + "' type from symbol table: " +
                                    (is_float ? "float" : "int"));
                     } else {
-                        // Fall back to AST analyzer
-                        VarType var_type = ASTAnalyzer::getInstance().get_variable_type(current_function_name_, var_name);
+                        // Use CallFrameManager for type info
+                        VarType var_type = current_frame_manager_->get_variable_type(var_name);
                         is_float = (var_type == VarType::FLOAT);
-                    }
-                    // Also check CallFrameManager
-                    if (!is_float && current_frame_manager_ && current_frame_manager_->is_float_variable(var_name)) {
-                        is_float = true;
-                        debug_print("Variable '" + var_name + "' identified as float from CallFrameManager");
                     }
                 } else {
                     // If storing a float value, update CallFrameManager
-                    if (current_frame_manager_ && !current_frame_manager_->is_float_variable(var_name)) {
-                        current_frame_manager_->mark_variable_as_float(var_name);
+                    if (current_frame_manager_ && current_frame_manager_->get_variable_type(var_name) != VarType::FLOAT) {
+                        current_frame_manager_->set_variable_type(var_name, VarType::FLOAT);
                         debug_print("Marked variable '" + var_name + "' as float in CallFrameManager due to float value assignment");
                     }
                 }
 
-                // Store with the appropriate instruction based on type
-                if (is_float) {
+                // --- THE FIX: Use the register type to select the store instruction ---
+                bool is_source_reg_float = register_manager_.is_fp_register(reg_to_store);
+                if (is_source_reg_float) {
                     emit(Encoder::create_str_fp_imm(reg_to_store, "X29", allocation.stack_offset));
-                    debug_print("Storing float value from " + reg_to_store + " to stack offset " +
+                    debug_print("Storing float VALUE from " + reg_to_store + " to stack offset " +
                                std::to_string(allocation.stack_offset) + " for '" + var_name + "'");
                 } else {
-                    emit(Encoder::create_str_imm(reg_to_store, "X29", allocation.stack_offset));
-                    debug_print("Storing integer value from " + reg_to_store + " to stack offset " +
+                    emit(Encoder::create_str_imm(reg_to_store, "X29", allocation.stack_offset, var_name));
+                    debug_print("Storing integer/pointer VALUE from " + reg_to_store + " to stack offset " +
                                std::to_string(allocation.stack_offset) + " for '" + var_name + "'");
                 }
             } else {
@@ -1105,27 +1254,24 @@ void NewCodeGenerator::store_variable_register(const std::string& var_name, cons
                             debug_print("Variable '" + var_name + "' type from symbol table: " +
                                        (is_float ? "float" : "int"));
                         } else {
-                            // Fall back to AST analyzer
-                            VarType var_type = ASTAnalyzer::getInstance().get_variable_type(current_function_name_, var_name);
+                            // Use CallFrameManager for type info
+                            VarType var_type = current_frame_manager_->get_variable_type(var_name);
                             is_float = (var_type == VarType::FLOAT);
-                        }
-                        // Also check CallFrameManager
-                        if (!is_float && current_frame_manager_ && current_frame_manager_->is_float_variable(var_name)) {
-                            is_float = true;
-                            debug_print("Variable '" + var_name + "' identified as float from CallFrameManager");
                         }
                     } else {
                         // If storing a float value, update CallFrameManager
-                        if (current_frame_manager_ && !current_frame_manager_->is_float_variable(var_name)) {
-                            current_frame_manager_->mark_variable_as_float(var_name);
+                        if (current_frame_manager_ && current_frame_manager_->get_variable_type(var_name) != VarType::FLOAT) {
+                            current_frame_manager_->set_variable_type(var_name, VarType::FLOAT);
                             debug_print("Marked variable '" + var_name + "' as float in CallFrameManager due to float value assignment");
                         }
                     }
 
-                    if (is_float) {
+                    // --- THE FIX: Use the register type to select the store instruction ---
+                    bool is_source_reg_float = register_manager_.is_fp_register(reg_to_store);
+                    if (is_source_reg_float) {
                         emit(Encoder::create_str_fp_imm(reg_to_store, "X29", offset));
                     } else {
-                        emit(Encoder::create_str_imm(reg_to_store, "X29", offset));
+                        emit(Encoder::create_str_imm(reg_to_store, "X29", offset, var_name));
                     }
 
                     // Update the allocation with the now-known offset
@@ -1170,19 +1316,14 @@ void NewCodeGenerator::store_variable_register(const std::string& var_name, cons
                         debug_print("Variable '" + var_name + "' type from symbol table: " +
                                    (is_float ? "float" : "int"));
                     } else {
-                        // Fall back to AST analyzer
-                        VarType var_type = ASTAnalyzer::getInstance().get_variable_type(current_function_name_, var_name);
+                        // Use CallFrameManager for type info
+                        VarType var_type = current_frame_manager_->get_variable_type(var_name);
                         is_float = (var_type == VarType::FLOAT);
-                    }
-                    // Also check CallFrameManager
-                    if (!is_float && current_frame_manager_ && current_frame_manager_->is_float_variable(var_name)) {
-                        is_float = true;
-                        debug_print("Variable '" + var_name + "' identified as float from CallFrameManager");
                     }
                 } else {
                     // If storing a float value, update CallFrameManager
-                    if (current_frame_manager_ && !current_frame_manager_->is_float_variable(var_name)) {
-                        current_frame_manager_->mark_variable_as_float(var_name);
+                    if (current_frame_manager_ && current_frame_manager_->get_variable_type(var_name) != VarType::FLOAT) {
+                        current_frame_manager_->set_variable_type(var_name, VarType::FLOAT);
                         debug_print("Marked variable '" + var_name + "' as float in CallFrameManager due to float value assignment");
                     }
                 }
@@ -1192,7 +1333,7 @@ void NewCodeGenerator::store_variable_register(const std::string& var_name, cons
                     emit(Encoder::create_str_fp_imm(reg_to_store, "X29", new_interval.stack_offset));
                     debug_print("Spilled float variable '" + var_name + "' to stack offset: " + std::to_string(new_interval.stack_offset));
                 } else {
-                    emit(Encoder::create_str_imm(reg_to_store, "X29", new_interval.stack_offset));
+                    emit(Encoder::create_str_imm(reg_to_store, "X29", new_interval.stack_offset, var_name));
                     debug_print("Spilled variable '" + var_name + "' to stack offset: " + std::to_string(new_interval.stack_offset));
                 }
                 return;
@@ -1212,7 +1353,19 @@ void NewCodeGenerator::store_variable_register(const std::string& var_name, cons
                 emit(Encoder::create_str_fp_imm(reg_to_store, "X28", byte_offset));
                 debug_print("Stored float value to global '" + var_name + "' at X28+" + std::to_string(byte_offset));
             } else {
-                emit(Encoder::create_str_imm(reg_to_store, "X28", byte_offset));
+                // Efficient and scalable path for large offsets
+                static constexpr size_t MAX_LDR_OFFSET = 4095 * 8; // 32,760 bytes
+                if (byte_offset <= MAX_LDR_OFFSET) {
+                    emit(Encoder::create_str_imm(reg_to_store, "X28", byte_offset, var_name));
+                } else {
+                    std::string offset_reg = register_manager_.acquire_scratch_reg(*this);
+                    std::string addr_reg = register_manager_.acquire_scratch_reg(*this);
+                    emit(Encoder::create_movz_movk_abs64(offset_reg, byte_offset, ""));
+                    emit(Encoder::create_add_reg(addr_reg, "X28", offset_reg));
+                    emit(Encoder::create_str_imm(reg_to_store, addr_reg, 0, var_name));
+                    register_manager_.release_register(offset_reg);
+                    register_manager_.release_register(addr_reg);
+                }
                 debug_print("Stored integer value to global '" + var_name + "' at X28+" + std::to_string(byte_offset));
             }
             return;
@@ -1232,8 +1385,19 @@ void NewCodeGenerator::store_variable_register(const std::string& var_name, cons
         if (is_float || register_manager_.is_fp_register(reg_to_store)) {
             emit(Encoder::create_str_fp_imm(reg_to_store, "X28", byte_offset));
         } else {
-            emit(Encoder::create_str_imm(reg_to_store, "X28", byte_offset));
-
+            // Efficient and scalable path for large offsets
+            static constexpr size_t MAX_LDR_OFFSET = 4095 * 8; // 32,760 bytes
+            if (byte_offset <= MAX_LDR_OFFSET) {
+                emit(Encoder::create_str_imm(reg_to_store, "X28", byte_offset, var_name));
+            } else {
+                std::string offset_reg = register_manager_.acquire_scratch_reg(*this);
+                std::string addr_reg = register_manager_.acquire_scratch_reg(*this);
+                emit(Encoder::create_movz_movk_abs64(offset_reg, byte_offset, ""));
+                emit(Encoder::create_add_reg(addr_reg, "X28", offset_reg));
+                emit(Encoder::create_str_imm(reg_to_store, addr_reg, 0, var_name));
+                register_manager_.release_register(offset_reg);
+                register_manager_.release_register(addr_reg);
+            }
         }
 
         debug_print("Stored register " + reg_to_store + " into global variable '" + var_name + "' at X28 + #" + std::to_string(byte_offset));
@@ -1254,6 +1418,15 @@ void NewCodeGenerator::generate_function_like_code(
     ASTNode& body_node,
     bool is_function_returning_value
 ) {
+
+    ASTAnalyzer& analyzer = ASTAnalyzer::getInstance();
+    std::string previous_analyzer_scope = analyzer.get_current_function_scope();
+    analyzer.set_current_function_scope(name);
+
+
+
+    current_function_allocation_.clear();
+
     current_function_name_ = name; // Track the current function name
     current_function_return_type_ = ASTAnalyzer::getInstance().get_function_return_types().at(name); // Retrieve and store the function's return type
     current_scope_name_ = name;    // Initialize scope tracking
@@ -1271,103 +1444,70 @@ void NewCodeGenerator::generate_function_like_code(
     // Set up a new CallFrameManager for this function/routine.
     current_frame_manager_ = std::make_unique<CallFrameManager>(register_manager_, name, debug_enabled_);
 
-    // Inform the CallFrameManager about the parameters BEFORE generating the prologue.
-    for (const auto& param_name : parameters) {
-        current_frame_manager_->add_parameter(param_name);
+    // Decide register pool based on global/runtime access and reset register manager accordingly.
+    bool accesses_globals = ASTAnalyzer::getInstance().function_accesses_globals(name);
+
+
+    // Inform both the RegisterManager AND the CallFrameManager about the active pool.
+    register_manager_.reset_for_new_function(accesses_globals);
+    current_frame_manager_->set_active_register_pool(!accesses_globals); // Use extended pool if NOT accessing globals
+
+
+    if (accesses_globals) {
+        current_frame_manager_->setUsesGlobalPointers(true);
     }
 
-    // START OF THE FIX
-    // =======================================================================
-    // Recursively find and register all local variables from LET declarations
-    // within the function's body BEFORE generating the prologue.
+    // Inform the CallFrameManager about the parameters BEFORE generating the prologue.
+    // Use analyzer's parameter_types to determine type for each parameter.
+    auto function_metrics_it = analyzer.get_function_metrics().find(name);
+    const std::map<std::string, VarType>* param_types = nullptr;
+    if (function_metrics_it != analyzer.get_function_metrics().end()) {
+        param_types = &function_metrics_it->second.parameter_types;
+    }
+    for (const auto& param_name : parameters) {
+        // Get parameter type from symbol table or analyzer
+        VarType param_type = VarType::INTEGER;
+        if (symbol_table_) {
+            Symbol param_symbol;
+            if (symbol_table_->lookup(param_name, param_symbol)) {
+                param_type = param_symbol.type;
+            }
+        } else {
+            param_type = ASTAnalyzer::getInstance().get_variable_type(name, param_name);
+        }
+        current_frame_manager_->add_parameter(param_name, param_type);
+    }
 
-    std::function<void(ASTNode*)> find_and_register_locals =
-        [&](ASTNode* node) {
-        if (!node) return;
 
-        // If this node is a LetDeclaration, register its variables.
-        if (auto* let_decl = dynamic_cast<LetDeclaration*>(node)) {
-            for (const auto& var_name : let_decl->names) {
-                // Check if it's not a parameter and not already added.
-                if (std::find(parameters.begin(), parameters.end(), var_name) == parameters.end() &&
-                    !current_frame_manager_->has_local(var_name)) {
+    // Use the ASTAnalyzer's metrics, which have been updated by optimization passes,
+    // to register ALL local variables (including new temporaries) with the CallFrameManager.
+    // This replaces the old, error-prone recursive AST walk.
+    debug_print("Registering all local variables from ASTAnalyzer metrics for '" + name + "'.");
 
-                    // We don't distinguish size here; assume all locals are 8 bytes.
-                    // Only add to stack if not a global
-                    Symbol symbol;
-                    if (!symbol_table_ || !symbol_table_->lookup(var_name, symbol) || !symbol.is_global()) {
-                        current_frame_manager_->add_local(var_name, 8);
-                        debug_print("Pre-registered VALOF/local variable '" + var_name + "' for '" + name + "'.");
-                    } else {
-                        debug_print("Recognized '" + var_name + "' as a global. It will not be allocated on the stack.");
-                    }
+    if (function_metrics_it != analyzer.get_function_metrics().end()) {
+        const auto& metrics = function_metrics_it->second;
+        for (const auto& var_pair : metrics.variable_types) {
+            const std::string& var_name = var_pair.first;
+            const VarType& var_type = var_pair.second;
+
+            // Check if it's not a parameter (they are already added).
+            bool is_param = false;
+            for (const auto& p_name : parameters) {
+                if (p_name == var_name) {
+                    is_param = true;
+                    break;
                 }
             }
-        }
 
-        // --- Recursively visit all children of the current node ---
-        // This list must cover all node types that can contain declarations.
-        if (auto* block = dynamic_cast<BlockStatement*>(node)) {
-            for (auto& stmt : block->statements) find_and_register_locals(stmt.get());
-        } else if (auto* compound = dynamic_cast<CompoundStatement*>(node)) {
-            for (auto& stmt : compound->statements) find_and_register_locals(stmt.get());
-        } else if (auto* valof = dynamic_cast<ValofExpression*>(node)) {
-            find_and_register_locals(valof->body.get());
-        } else if (auto* fvalof = dynamic_cast<FloatValofExpression*>(node)) {
-            find_and_register_locals(fvalof->body.get());
-        } else if (auto* if_stmt = dynamic_cast<IfStatement*>(node)) {
-            find_and_register_locals(if_stmt->then_branch.get());
-        } else if (auto* unless_stmt = dynamic_cast<UnlessStatement*>(node)) {
-            find_and_register_locals(unless_stmt->then_branch.get());
-        } else if (auto* test_stmt = dynamic_cast<TestStatement*>(node)) {
-            find_and_register_locals(test_stmt->then_branch.get());
-            find_and_register_locals(test_stmt->else_branch.get());
-        } else if (auto* for_stmt = dynamic_cast<ForStatement*>(node)) {
-            find_and_register_locals(for_stmt->start_expr.get());
-            find_and_register_locals(for_stmt->end_expr.get());
-            find_and_register_locals(for_stmt->step_expr.get());
-            find_and_register_locals(for_stmt->body.get());
-        } else if (auto* while_stmt = dynamic_cast<WhileStatement*>(node)) {
-            find_and_register_locals(while_stmt->condition.get());
-            find_and_register_locals(while_stmt->body.get());
-        } else if (auto* until_stmt = dynamic_cast<UntilStatement*>(node)) {
-            find_and_register_locals(until_stmt->condition.get());
-            find_and_register_locals(until_stmt->body.get());
-        } else if (auto* repeat_stmt = dynamic_cast<RepeatStatement*>(node)) {
-            find_and_register_locals(repeat_stmt->body.get());
-            find_and_register_locals(repeat_stmt->condition.get());
-        }
-    };
-
-    // Start the recursive search from the function's body.
-    find_and_register_locals(&body_node);
-
-    // =======================================================================
-    // END OF THE FIX
-    enter_scope();
-
-    // Pre-register locals/parameters for this entity using ASTAnalyzer's pre-scan results.
-    std::unordered_set<std::string> param_set(parameters.begin(), parameters.end()); // For quick lookup
-
-    for (const auto& pair : ASTAnalyzer::getInstance().get_variable_definitions()) {
-        // 'pair.first' is the unique variable name (e.g., "Y", "I_for_loop_0")
-        // 'pair.second' is the scope name (e.g., "START_block_0")
-        if ((pair.second == name || pair.second.find(name + "_block_") == 0) &&
-            param_set.find(pair.first) == param_set.end()) { // If not a parameter
-            // Only add to stack if not a global
-            Symbol symbol;
-            if (!symbol_table_ || !symbol_table_->lookup(pair.first, symbol) || !symbol.is_global()) {
-                current_frame_manager_->add_local(pair.first, 8); // Add to CFM for stack space
-                current_scope_symbols_[pair.first] = -1; // Mark as local in symbol table (offset from CFM)
-                debug_print("Pre-registered local variable '" + pair.first + "' for '" + name + "'.");
-            } else {
-                debug_print("Recognized '" + pair.first + "' as a global. It will not be allocated on the stack.");
+            if (!is_param && !current_frame_manager_->has_local(var_name)) {
+                // Register the variable. Assume all locals are 8 bytes for now.
+                current_frame_manager_->add_local(var_name, var_type);
+                debug_print("Registered local '" + var_name + "' as type " + std::to_string(static_cast<int>(var_type)) + " from analyzer metrics.");
             }
-        } else if (param_set.find(pair.first) != param_set.end()) {
-            current_scope_symbols_[pair.first] = -1; // Mark parameter in symbol table as local
-            debug_print("Pre-registered parameter '" + pair.first + "' as local for '" + name + "'.");
         }
     }
+    // -- END OF NEW LOGIC --
+    enter_scope();
 
     // --- HEURISTIC-BASED SPILL SLOT RESERVATION ---
     int max_live = 0;
@@ -1386,10 +1526,86 @@ void NewCodeGenerator::generate_function_like_code(
     // --- Reserve callee-saved registers based on register pressure ---
     current_frame_manager_->reserve_registers_based_on_pressure(max_live);
 
-    // Generate the function/routine prologue.
+
+    if (!accesses_globals) {
+        // Ask the register manager which callee-saved registers it ended up using.
+        // This will include X19 or X28 if they were allocated.
+        auto used_callee_regs = register_manager_.get_in_use_callee_saved_registers();
+        for (const auto& reg : used_callee_regs) {
+            // Explicitly tell the frame manager it MUST save and restore this register.
+            current_frame_manager_->force_save_register(reg);
+        }
+    }
+
+
+    // Now, when the prologue is generated, it will have the correct list of registers to save.
     debug_print("Attempting to generate prologue for '" + name + "'.");
     for (const auto& instr : current_frame_manager_->generate_prologue()) {
         emit(instr);
+    }
+
+    // --- FIX STARTS HERE ---
+    // Prime the register allocator with the locations of incoming parameters.
+    debug_print("Priming register allocator with incoming parameter locations.");
+    if (function_metrics_it != analyzer.get_function_metrics().end()) {
+        const auto& metrics = function_metrics_it->second;
+        const auto& param_types = metrics.parameter_types;
+        for (size_t i = 0; i < parameters.size(); ++i) {
+            const std::string& param_name = parameters[i];
+            VarType ptype = VarType::INTEGER; // Default to integer
+            auto ptype_it = param_types.find(param_name);
+            if (ptype_it != param_types.end()) {
+                ptype = ptype_it->second;
+            }
+
+            LiveInterval param_interval;
+            param_interval.var_name = param_name;
+            param_interval.is_spilled = false; // It's in a register, not on the stack.
+            param_interval.start_point = 0; // It's live from the very start.
+            param_interval.end_point = 1000; // Liveness analysis will provide more accurate ranges later.
+
+            if (i < 8) {
+                if (ptype == VarType::FLOAT) {
+                    param_interval.assigned_register = "D" + std::to_string(i);
+                } else {
+                    param_interval.assigned_register = "X" + std::to_string(i);
+                }
+            } else {
+                // For >8 parameters, not handled in registers, so mark as spilled.
+                param_interval.is_spilled = true;
+                param_interval.assigned_register = "";
+            }
+
+            current_function_allocation_[param_name] = param_interval;
+            debug_print("  Primed '" + param_name + "' in register " + param_interval.assigned_register);
+        }
+    }
+    // --- FIX ENDS HERE ---
+
+    // Now that the prologue is generated and offsets are finalized,
+    // store incoming arguments from registers to their stack slots.
+    if (function_metrics_it != analyzer.get_function_metrics().end()) {
+        const auto& metrics = function_metrics_it->second;
+        const auto& param_types = metrics.parameter_types;
+        for (size_t i = 0; i < parameters.size(); ++i) {
+            const std::string& param_name = parameters[i];
+            VarType ptype = VarType::INTEGER; // Default to integer
+            auto ptype_it = param_types.find(param_name);
+            if (ptype_it != param_types.end()) {
+                ptype = ptype_it->second;
+            }
+
+            // ARM64 calling convention: first 8 args in X0-X7 or D0-D7
+            if (i < 8) {
+                if (ptype == VarType::FLOAT) {
+                    emit(Encoder::create_str_fp_imm("D" + std::to_string(i), "X29", current_frame_manager_->get_offset(param_name)));
+                } else {
+                    emit(Encoder::create_str_imm("X" + std::to_string(i), "X29", current_frame_manager_->get_offset(param_name), param_name));
+                }
+            } else {
+                debug_print("Warning: More than 8 parameters are not handled for stack storage.");
+            }
+        }
     }
 
     // Update stack offsets for spilled variables now that the prologue has been generated
@@ -1410,22 +1626,49 @@ void NewCodeGenerator::generate_function_like_code(
                 current_function_allocation_[local_name] = new_interval;
                 debug_print("Registered local variable '" + local_name + "' with the allocation system (spilled)");
             } catch (const std::runtime_error& e) {
-                debug_print("WARNING: Failed to register local variable '" + local_name + "': " + std::string(e.what()));
+                debug_print("WARNING: Could not get stack offset for local variable '" + local_name + "': " + std::string(e.what()));
             }
         }
     }
 
-    // If this function accesses global variables, emit a MOVZ/MOVK sequence
-    // to load the absolute 64-bit address of the data segment base into X28.
-    // The immediate values are patched by the linker.
+
+
+
+    // If this function accesses global variables OR calls any runtime functions,
+    // emit a MOVZ/MOVK sequence to load the absolute 64-bit address of the data segment base into X28,
+    // and set up X19 as the runtime table base (X28 + 512KB).
+    // If this function accesses global variables OR calls any runtime functions,
+    // emit a MOVZ/MOVK sequence to load the absolute 64-bit address of the data segment base into X28,
+    // and set up X19 as the runtime table base (X28 + 524288).
     if (ASTAnalyzer::getInstance().function_accesses_globals(name)) {
-        if (data_segment_base_addr_ == 0) {
-            throw std::runtime_error("JIT mode requires a valid data_segment_base_addr.");
+        if (is_jit_mode_) {
+            if (data_segment_base_addr_ == 0) {
+                throw std::runtime_error("JIT mode requires a valid data_segment_base_addr.");
+            }
+            emit(Encoder::create_movz_movk_jit_addr("X28", data_segment_base_addr_, "L__data_segment_base"));
+            x28_is_loaded_in_current_function_ = true;
+            debug_print("Emitted JIT address load sequence for global base pointer (X28).");
+
+            // Set up X19 as the runtime table base (X28 + 524288).
+            std::string offset_reg = register_manager_.acquire_scratch_reg(*this);
+            emit(Encoder::create_movz_movk_abs64(offset_reg, 524288, ""));
+            emit(Encoder::create_add_reg("X19", "X28", offset_reg));
+            register_manager_.release_register(offset_reg);
+            debug_print("Initialized X19 as runtime table base (X28 + 524288).");
+        } else {
+            // Static mode: emit ADRP + ADD for X28, then set up X19
+            emit(Encoder::create_adrp("X28", "L__data_segment_base"));
+            emit(Encoder::create_add_literal("X28", "X28", "L__data_segment_base"));
+            x28_is_loaded_in_current_function_ = true;
+            debug_print("Emitted ADRP+ADD sequence for global base pointer (X28) in static mode.");
+
+            // Set up X19 as the runtime table base (X28 + 524288).
+            std::string offset_reg = register_manager_.acquire_scratch_reg(*this);
+            emit(Encoder::create_movz_movk_abs64(offset_reg, 524288, ""));
+            emit(Encoder::create_add_reg("X19", "X28", offset_reg));
+            register_manager_.release_register(offset_reg);
+            debug_print("Initialized X19 as runtime table base (X28 + 524288) in static mode.");
         }
-        // Directly use the known 64-bit address. The symbol is now empty as no relocation is needed.
-        emit(Encoder::create_movz_movk_jit_addr("X28", data_segment_base_addr_, "L__data_segment_base"));
-        x28_is_loaded_in_current_function_ = true;
-        debug_print("Directly emitted JIT address load sequence for X28.");
     }
 
     // Store incoming argument registers into their stack slots.
@@ -1497,6 +1740,9 @@ void NewCodeGenerator::generate_function_like_code(
 
     // Clean up the CallFrameManager unique_ptr.
     current_frame_manager_.reset();
+
+    // --- RESTORE ANALYZER SCOPE ---
+    analyzer.set_current_function_scope(previous_analyzer_scope);
 }
 
 // --- CFG-driven codegen: block epilogue logic ---
@@ -1525,58 +1771,21 @@ void NewCodeGenerator::generate_block_epilogue(BasicBlock* block) {
             return;
         }
 
-        // For other blocks with one successor, generate unconditional branch
-        // Before generating an unconditional branch, check if this is an assignment block that follows a loop condition
-        // This helps ensure assignments like increments get processed properly
-        bool is_increment_block = false;
-        if (!block->statements.empty()) {
-            // Check if this block contains exactly one statement which is an assignment
-            if (block->statements.size() == 1 && block->statements[0]->getType() == ASTNode::NodeType::AssignmentStmt) {
-                // Check if any predecessor is a loop block
-                for (const auto* pred : block->predecessors) {
-                    if (!pred->statements.empty()) {
-                        const auto* last_stmt = pred->statements.back().get();
-                        if (dynamic_cast<const ForStatement*>(last_stmt) ||
-                            dynamic_cast<const WhileStatement*>(last_stmt) ||
-                            dynamic_cast<const UntilStatement*>(last_stmt) ||
-                            dynamic_cast<const RepeatStatement*>(last_stmt)) {
-                            is_increment_block = true;
-                            if (debug_enabled_) {
-                                std::cerr << "DEBUG: Found increment block " << block->id
-                                          << " with predecessor " << pred->id << " (loop type)\n";
-                            }
-                            break;
-                        }
-                    }
-                }
+        // The special check for "is_increment_block" has been removed.
+        // The function now correctly emits only the unconditional branch for any
+        // block with a single successor, as the statements have already been processed.
+
+
+        if (dynamic_cast<const LoopStatement*>(last_stmt)) {
+            debug_print("Generating branch for LOOP statement based on CFG");
+            if (debug_enabled_) {
+                std::cerr << "DEBUG: LOOP codegen - Emitting branch from block " << block->id
+                          << " to target " << block->successors[0]->id << "\n";
             }
+            emit(Encoder::create_branch_unconditional(block->successors[0]->id));
+            return;
         }
-
-        if (is_increment_block) {
-            if (debug_enabled_) {
-                std::cerr << "DEBUG: Processing increment block " << block->id
-                          << " with " << block->statements.size() << " statements\n";
-            }
-
-            // Process the statement(s) in this block before branching
-            for (const auto& stmt : block->statements) {
-                if (debug_enabled_) {
-                    std::cerr << "DEBUG: Processing statement in increment block "
-                                  << "\n";
-                }
-                stmt->accept(*this);
-            }
-
-            if (debug_enabled_) {
-                std::cerr << "DEBUG: Finished processing increment block statements\n";
-            }
-        } else {
-            if (debug_enabled_) {
-                std::cerr << "DEBUG: Block " << block->id
-                          << " has one successor but is NOT detected as an increment block\n";
-            }
-        }
-
+        
         emit(Encoder::create_branch_unconditional(block->successors[0]->id));
         return;
     }
@@ -1647,8 +1856,8 @@ void NewCodeGenerator::generate_block_epilogue(BasicBlock* block) {
             }
 
             // Load current loop variable value
-            std::string loop_var_reg = register_manager_.acquire_scratch_reg();
-            emit(Encoder::create_ldr_imm(loop_var_reg, "X29", current_frame_manager_->get_offset(for_stmt->unique_loop_variable_name)));
+            std::string loop_var_reg = register_manager_.acquire_scratch_reg(*this);
+            emit(Encoder::create_ldr_imm(loop_var_reg, "X29", current_frame_manager_->get_offset(for_stmt->unique_loop_variable_name), for_stmt->unique_loop_variable_name));
 
             // Evaluate end expression
             generate_expression_code(*for_stmt->end_expr);
@@ -1731,6 +1940,34 @@ void NewCodeGenerator::generate_block_epilogue(BasicBlock* block) {
                 // Simple REPEAT loop without condition (always loops back)
                 emit(Encoder::create_branch_unconditional(block->successors[0]->id));
             }
+        } else if (const auto* switchon = dynamic_cast<const SwitchonStatement*>(last_stmt)) {
+            debug_print("Epilogue: Generating two-way branch for SwitchonStatement.");
+
+            // 1. Evaluate the switch expression.
+            generate_expression_code(*switchon->expression);
+            std::string switch_reg = expression_result_reg_;
+
+            // 2. For each CASE, emit a comparison and conditional branch.
+            for (size_t i = 0; i < switchon->cases.size(); ++i) {
+                const auto& case_stmt = switchon->cases[i];
+                if (!case_stmt->resolved_constant_value.has_value()) {
+                    throw std::runtime_error("CaseStatement missing resolved constant value during codegen.");
+                }
+                int64_t case_value = case_stmt->resolved_constant_value.value();
+
+                emit(Encoder::create_cmp_imm(switch_reg, case_value));
+                emit(Encoder::create_branch_conditional("EQ", block->successors[i]->id));
+            }
+
+            // 3. After checking all cases, branch to the appropriate block.
+            if (switchon->default_case) {
+                emit(Encoder::create_branch_unconditional(block->successors[switchon->cases.size()]->id));
+            } else {
+                emit(Encoder::create_branch_unconditional(block->successors.back()->id));
+            }
+
+            register_manager_.release_register(switch_reg);
+            return; // Epilogue for this block is complete.
         } else {
             std::string error_msg = "Block has two successors but last statement is not a recognized conditional.";
             if (last_stmt) {
@@ -1758,62 +1995,58 @@ void NewCodeGenerator::generate_block_epilogue(BasicBlock* block) {
         }
         return;
     }
-    // START of inserted fix
     else if (block->successors.size() > 2) {
+        // --- START OF THE DEFINITIVE FIX ---
         // The last statement in the block should be a SwitchonStatement
         const Statement* last_stmt = block->statements.empty() ? nullptr : block->statements.back().get();
-        const SwitchonStatement* switchon = dynamic_cast<const SwitchonStatement*>(last_stmt);
+        if (const auto* switchon = dynamic_cast<const SwitchonStatement*>(last_stmt)) {
+            debug_print("Epilogue: Generating multi-way branch for SwitchonStatement.");
 
-        if (!switchon) {
-            std::string error_msg = "Block with >2 successors expected to end with SwitchonStatement, but got ";
-            if (last_stmt) {
-                error_msg += std::to_string(static_cast<int>(last_stmt->getType()));
+            // 1. Evaluate the switch expression. The result is in expression_result_reg_.
+            generate_expression_code(*switchon->expression);
+            std::string switch_reg = expression_result_reg_;
+
+            // 2. For each CASE, emit a comparison and conditional branch.
+            //    The CFG successor order must match the AST case order, which it does.
+            for (size_t i = 0; i < switchon->cases.size(); ++i) {
+                const auto& case_stmt = switchon->cases[i];
+                if (!case_stmt->resolved_constant_value.has_value()) {
+                    throw std::runtime_error("CaseStatement missing resolved constant value during codegen.");
+                }
+                int64_t case_value = case_stmt->resolved_constant_value.value();
+
+                // Compare the value in switch_reg with the case's constant value.
+                emit(Encoder::create_cmp_imm(switch_reg, case_value));
+
+                // If equal, branch to the corresponding case block (successors[i]).
+                emit(Encoder::create_branch_conditional("EQ", block->successors[i]->id));
+            }
+
+            // 3. After checking all cases, branch to the appropriate block.
+            if (switchon->default_case) {
+                // If a DEFAULT case exists, branch to its block.
+                // In the CFG, the DEFAULT block is the successor after all CASEs.
+                emit(Encoder::create_branch_unconditional(block->successors[switchon->cases.size()]->id));
             } else {
-                error_msg += "no statement";
+                // If no DEFAULT case, branch to the final JOIN block.
+                // The JOIN block is always the last successor.
+                emit(Encoder::create_branch_unconditional(block->successors.back()->id));
             }
-            throw std::runtime_error(error_msg);
+
+            register_manager_.release_register(switch_reg);
+            return; // Epilogue for this block is complete.
         }
+        // --- END OF THE DEFINITIVE FIX ---
 
-        // 1. Evaluate the switch expression. The result is assumed to be in a register
-        // that is still live. For simplicity, we re-evaluate it here. A more optimized
-        // approach would pass the result register from the previous block.
-        generate_expression_code(*switchon->expression);
-        std::string switch_reg = expression_result_reg_;
-
-        // 2. For each CASE, emit a comparison and conditional branch.
-        // The order of successors in the CFG must match the order of cases in the AST.
-        size_t num_cases = switchon->cases.size();
-        bool has_default = (switchon->default_case != nullptr);
-
-        for (size_t i = 0; i < num_cases; ++i) {
-            const auto& case_stmt = switchon->cases[i];
-            if (!case_stmt->resolved_constant_value.has_value()) {
-                throw std::runtime_error("CaseStatement missing resolved constant value during codegen.");
-            }
-            int64_t case_value = case_stmt->resolved_constant_value.value();
-
-            // Load the case constant into a temp register
-            std::string case_reg = register_manager_.acquire_scratch_reg();
-            // Using MOVZ/MOVK for potentially large constants
-            auto mov_instrs = Encoder::create_movz_movk_abs64(case_reg, case_value, "");
-            emit(mov_instrs);
-
-            // Compare switch_reg with case_reg
-            emit(Encoder::create_cmp_reg(switch_reg, case_reg));
-            register_manager_.release_register(case_reg);
-
-            // If equal, branch to the corresponding case block
-            emit(Encoder::create_branch_conditional("EQ", block->successors[i]->id));
+        // fallback: error if not a SwitchonStatement
+        std::string error_msg = "Block with >2 successors expected to end with SwitchonStatement, but got ";
+        if (last_stmt) {
+            error_msg += std::to_string(static_cast<int>(last_stmt->getType()));
+        } else {
+            error_msg += "no statement";
         }
-
-        // 3. If there is a DEFAULT, branch to it; otherwise, branch to the end_switch block.
-        // The fallback successor is the last one in the list.
-        emit(Encoder::create_branch_unconditional(block->successors.back()->id));
-
-        register_manager_.release_register(switch_reg);
-        return;
+        throw std::runtime_error(error_msg);
     }
-    // END of inserted fix
 }
 
 
@@ -1826,13 +2059,6 @@ void NewCodeGenerator::visit(IfStatement& node) {
     debug_print("Visiting IfStatement node (NOTE: branching is handled by block epilogue).");
     // No branching logic here; only evaluate condition if needed elsewhere.
 }
-// They are NOT included here to avoid duplication.
-//
-// Example (conceptual, actual code is in respective gen_*.cpp files):
-//
-// void NewCodeGenerator::visit(Program& node) { /* ... in gen_Program.cpp ... */ }
-// void NewCodeGenerator::visit(LetDeclaration& node) { /* ... in gen_LetDeclaration.cpp ... */ }
-// ... (all other visit methods) ...
 
 void NewCodeGenerator::visit(GlobalVariableDeclaration& node) {
     debug_print("Visiting GlobalVariableDeclaration node for: " + node.names[0]);

@@ -37,7 +37,8 @@ public:
                      DataGenerator& data_generator,
                      unsigned long long text_segment_size,
                      const CFGBuilderPass& cfg_builder,
-                     std::unique_ptr<SymbolTable> symbol_table);
+                     std::unique_ptr<SymbolTable> symbol_table,
+                     bool is_jit_mode);
 
     // Main entry point
     void generate_code(Program& program);
@@ -59,7 +60,17 @@ public:
     void handle_global_variable_declaration(const std::string& name, const ExprPtr& initializer);
     void initialize_variable(const std::string& name, const ExprPtr& initializer, bool is_float_declaration = false);
 
+    // X19-relative scalable access helpers for runtime tables
+    void emit_x19_relative_ldr(const std::string& dest_reg, size_t byte_offset, const std::string& comment = "");
+    void emit_x19_relative_str(const std::string& src_reg, size_t byte_offset, const std::string& comment = "");
+
+    // Returns true if this code generator is in JIT mode (not static/exec mode)
+    bool is_jit_mode() const { return is_jit_mode_; }
+
 private:
+    static constexpr size_t MAX_LDR_OFFSET = 4095 * 8; // 32,760 bytes
+    bool is_jit_mode_ = false;
+
     const CFGBuilderPass& cfg_builder_;
     VarType current_function_return_type_; // Tracks the return type of the current function
 
@@ -83,17 +94,27 @@ private:
     void visit(VectorAccess& node) override;
     void visit(CharIndirection& node) override;
     void visit(FloatVectorIndirection& node) override;
+    void visit(BitfieldAccessExpression& node) override;
     void visit(FunctionCall& node) override;
     void visit(ConditionalExpression& node) override;
-    void visit(ValofExpression& node) override;
+    void visit(TableExpression& node) override;
+
+    void visit(FreeStatement& node) override;
+
+    void visit(ListExpression& node) override;
+
+    void visit(ForEachStatement& node) override;
+
     void visit(FloatValofExpression& node) override;
+    void visit(ValofExpression& node) override;
     
     // Short-circuit evaluation methods
     void generate_short_circuit_and(BinaryOp& node);
     void generate_short_circuit_or(BinaryOp& node);
     void visit(VecAllocationExpression& node) override;
+    void visit(VecInitializerExpression& node) override;
+    void visit(FVecAllocationExpression& node) override;
     void visit(StringAllocationExpression& node) override;
-    void visit(TableExpression& node) override;
     void visit(AssignmentStatement& node) override;
     void visit(RoutineCallStatement& node) override;
     void visit(IfStatement& node) override;
@@ -114,7 +135,6 @@ private:
     void visit(LoopStatement& node) override;
     void visit(EndcaseStatement& node) override;
     void visit(ResultisStatement& node) override;
-    void visit(FreeStatement& node) override;
     void visit(LabelTargetStatement& node) override;
     void visit(ConditionalBranchStatement& node) override;
     void visit(CompoundStatement& node) override;
@@ -159,6 +179,13 @@ private:
     void generate_function_like_code(const std::string& name, const std::vector<std::string>& parameters, ASTNode& body_node, bool is_function_returning_value);
     void enter_scope();
     void exit_scope();
+
+    // --- UnaryOp helpers ---
+    void generate_list_intrinsic_code(UnaryOp& node);
+    void generate_memory_op_code(UnaryOp& node);
+    void generate_len_op_code(UnaryOp& node);
+    void generate_float_op_code(UnaryOp& node);
+    void generate_integer_op_code(UnaryOp& node);
     void debug_print(const std::string& message) const;
     void debug_print_level(const std::string& message, int level) const;
     bool is_local_variable(const std::string& name) const;

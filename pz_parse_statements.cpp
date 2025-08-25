@@ -1,6 +1,7 @@
 #include "Parser.h"
 #include <stdexcept>
 #include <vector>
+#include "AST.h"
 
 /**
  * @brief Parses a statement, handling optional REPEAT WHILE/UNTIL clauses.
@@ -30,53 +31,20 @@ StmtPtr Parser::parse_statement() {
     return statement;
 }
 
-bool Parser::is_expression_start() const {
-    switch (current_token_.type) {
-        // Literals
-        case TokenType::Identifier:
-        case TokenType::NumberLiteral:
-        case TokenType::StringLiteral:
-        case TokenType::CharLiteral:
-        case TokenType::BooleanLiteral:
-        // Prefix operators
-        case TokenType::Indirection:   // This is the crucial '!'
-        case TokenType::AddressOf:
-        case TokenType::Minus:
-        // Expression keywords
-        case TokenType::Valof:
-        case TokenType::FValof:
-        case TokenType::Vec:
-        case TokenType::String:
-        // Grouping
-        case TokenType::LParen:
-            return true;
-        default:
-            return false;
-    }
-}
-
 /**
  * @brief Parses a non-REPEAT statement based on the current token.
  */
 StmtPtr Parser::parse_primary_statement() {
     TraceGuard guard(*this, "parse_primary_statement");
 
-    // --- START OF FIX ---
     // Check for a label target as the start of a statement.
     if (check(TokenType::Identifier) && lexer_.peek().type == TokenType::Colon) {
         std::string label_name = current_token_.value;
         consume(TokenType::Identifier, "Expect identifier for label name.");
         consume(TokenType::Colon, "Expect ':' after label name.");
-        // Return a new LabelTargetStatement. The statement that FOLLOWS this
-        // will be parsed in the next iteration of the block parsing loop.
         return std::make_unique<LabelTargetStatement>(label_name);
     }
-    // --- END OF FIX ---
-
-    // A statement starting with an expression (including identifier, indirection, etc.)
-    if (is_expression_start()) {
-        return parse_assignment_or_routine_call();
-    }
+    
     // A statement starting with a brace is a block or compound statement.
     if (check(TokenType::LBrace)) {
         return parse_block_or_compound_statement();
@@ -84,11 +52,13 @@ StmtPtr Parser::parse_primary_statement() {
 
     // Handle all other statement types based on their keyword.
     switch (current_token_.type) {
+        case TokenType::Repeat:     return parse_repeat_statement(); // <-- ADDED
         case TokenType::If:         return parse_if_statement();
         case TokenType::Unless:     return parse_unless_statement();
         case TokenType::Test:       return parse_test_statement();
         case TokenType::While:      return parse_while_statement();
         case TokenType::For:        return parse_for_statement();
+        case TokenType::ForEach:    return parse_foreach_statement();
         case TokenType::Switchon:   return parse_switchon_statement();
         case TokenType::Goto:       return parse_goto_statement();
         case TokenType::FREEVEC:    return parse_free_statement();
@@ -99,9 +69,74 @@ StmtPtr Parser::parse_primary_statement() {
         case TokenType::Loop:       return parse_loop_statement();
         case TokenType::Endcase:    return parse_endcase_statement();
         case TokenType::Resultis:   return parse_resultis_statement();
+        
         default:
-            return nullptr;
+            // If it's not a keyword-led statement, it must be
+            // an assignment or routine call, which starts with an expression.
+            return parse_assignment_or_routine_call();
     }
+}
+
+/**
+ * @brief Parses a FOREACH statement.
+ */
+StmtPtr Parser::parse_foreach_statement() {
+    TraceGuard guard(*this, "parse_foreach_statement");
+    advance(); // Consume FOREACH
+
+    // --- REVISED LOGIC ---
+    std::string loop_var_name, type_var_name;
+
+    // Read the first identifier. It could be the loop variable `e` or the type variable `T`.
+    std::string first_var = current_token_.value;
+    consume(TokenType::Identifier, "Expect at least one variable name after FOREACH.");
+
+    // Look ahead to see if there's a comma, which indicates the two-variable form.
+    if (match(TokenType::Comma)) {
+        // This is the "FOREACH T, V" form.
+        type_var_name = first_var; // The first variable was the type.
+        loop_var_name = current_token_.value; // The second variable is the value.
+        consume(TokenType::Identifier, "Expect value variable name after comma.");
+    } else {
+        // This is the single-variable "FOREACH e" form.
+        loop_var_name = first_var; // The first variable was the value.
+        // type_var_name remains empty, which is the correct state for this form.
+    }
+    // --- END REVISED LOGIC ---
+
+    consume(TokenType::In, "Expect IN after loop variable(s).");
+    auto collection_expr = parse_expression();
+
+    // A filter type is no longer parsed here but is inferred by the analyzer.
+    // The VarType::ANY argument is a placeholder.
+
+    consume(TokenType::Do, "Expect DO after collection expression.");
+    auto body = parse_statement();
+
+    return std::make_unique<ForEachStatement>(loop_var_name, type_var_name, std::move(collection_expr), std::move(body), VarType::ANY);
+}
+
+// --- REPEAT statement parsing ---
+
+StmtPtr Parser::parse_repeat_statement() {
+    TraceGuard guard(*this, "parse_repeat_statement");
+    consume(TokenType::Repeat, "Expect 'REPEAT'.");
+
+    // Now parse the loop body, which is a statement.
+    auto body = parse_statement();
+
+    // After the body, expect the 'UNTIL' keyword.
+    consume(TokenType::Until, "Expect 'UNTIL' after REPEAT body.");
+
+    // Finally, parse the condition expression.
+    auto condition = parse_expression();
+
+    // Create the AST node.
+    return std::make_unique<RepeatStatement>(
+        RepeatStatement::LoopType::RepeatUntil,
+        std::move(body),
+        std::move(condition)
+    );
 }
 
 /**
@@ -110,42 +145,42 @@ StmtPtr Parser::parse_primary_statement() {
 StmtPtr Parser::parse_assignment_or_routine_call() {
     TraceGuard guard(*this, "parse_assignment_or_routine_call");
 
-    // 1. Parse the entire expression on the left. This will correctly handle
-    //    simple variables (X), vector access (V!0), and indirection (!P).
-    ExprPtr left_expr = parse_expression();
-    if (!left_expr) {
+    // First, parse it as a generic expression.
+    ExprPtr expr = parse_expression();
+    if (!expr) {
         error("Expected an expression for assignment or routine call.");
         return nullptr;
     }
 
-    // 2. After parsing the expression, check what follows.
-    if (match(TokenType::Assign)) {
-        // --- It's an Assignment Statement ---
-        // The 'left_expr' is the target.
-        std::vector<ExprPtr> lhs_exprs;
-        lhs_exprs.push_back(std::move(left_expr));
 
-        // Parse the right-hand side value(s).
-        std::vector<ExprPtr> rhs_exprs;
-        do {
-            rhs_exprs.push_back(parse_expression());
-        } while (match(TokenType::Comma));
-
-        return std::make_unique<AssignmentStatement>(std::move(lhs_exprs), std::move(rhs_exprs));
+    // If the parsed expression is a FunctionCall node, it's a routine call.
+    if (expr->getType() == ASTNode::NodeType::FunctionCallExpr) {
+        auto call_expr = static_cast<FunctionCall*>(expr.release());
+        return std::make_unique<RoutineCallStatement>(std::move(call_expr->function_expr), std::move(call_expr->arguments));
     }
 
-    // 3. If it's not an assignment, it must be a routine call.
-    //    This means the expression we just parsed must have been a FunctionCall node.
-    if (left_expr->getType() == ASTNode::NodeType::FunctionCallExpr) {
-        auto call_expr = static_cast<FunctionCall*>(left_expr.release());
-        return std::make_unique<RoutineCallStatement>(
-            std::move(call_expr->function_expr), std::move(call_expr->arguments)
-        );
+    // Otherwise, it must be an assignment.
+    std::vector<ExprPtr> lhs_exprs;
+    lhs_exprs.push_back(std::move(expr));
+
+    // Handle multiple assignment targets (e.g., x, y, z := ...).
+    while (match(TokenType::Comma)) {
+        lhs_exprs.push_back(parse_expression());
     }
 
-    // 4. If it's not an assignment and not a routine call, it's a syntax error.
-    error("Expected ':=' for an assignment or '(' for a routine call after expression.");
-    return nullptr;
+    consume(TokenType::Assign, "Expect ':=' for an assignment statement.");
+
+    // Handle multiple assignment values (e.g., ... := 1, 2, 3).
+    std::vector<ExprPtr> rhs_exprs;
+    do {
+        rhs_exprs.push_back(parse_expression());
+    } while (match(TokenType::Comma));
+
+    if (lhs_exprs.size() != rhs_exprs.size()) {
+        error("Mismatch in number of l-values and r-values for assignment.");
+        return nullptr;
+    }
+    return std::make_unique<AssignmentStatement>(std::move(lhs_exprs), std::move(rhs_exprs));
 }
 
 /**

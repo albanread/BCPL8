@@ -28,12 +28,14 @@
 // --- Project Headers ---
 #include "Preprocessor.h"
 #include "AST.h"
+#include "SymbolLogger.h"
 
 
 #include "AssemblyWriter.h"
 #include "CodeBuffer.h"
-#include "CommonSubexpressionEliminationPass.h"
+#include "LocalOptimizationPass.h"
 #include "ConstantFoldingPass.h"
+#include "LoopInvariantCodeMotionPass.h"
 // ShortCircuitPass disabled due to memory management issues
 #include "DataGenerator.h"
 #include "DebugPrinter.h"
@@ -63,6 +65,7 @@
 // --- Global Variables ---
 bool g_enable_lexer_trace = false;
 std::unique_ptr<CodeBuffer> g_jit_code_buffer;
+std::unique_ptr<JITMemoryManager> g_jit_data_manager; // <-- ADD THIS LINE
 std::unique_ptr<JITExecutor> g_jit_executor;
 std::string g_jit_breakpoint_label;
 int g_jit_breakpoint_offset = 0;
@@ -89,6 +92,7 @@ void handle_jit_execution(void* code_buffer_base, const std::string& call_entry_
 // Main Execution Logic
 // =================================================================================
 int main(int argc, char* argv[]) {
+    ASTAnalyzer& analyzer = ASTAnalyzer::getInstance();
     bool enable_tracing = false;
     if (enable_tracing) {
         std::cout << "Debug: Starting compiler, argc=" << argc << std::endl;
@@ -96,7 +100,7 @@ int main(int argc, char* argv[]) {
     bool run_jit = false;
     bool generate_asm = false;
     bool exec_mode = false;
-    bool enable_opt = false;
+    bool enable_opt = true;
     bool dump_jit_stack = false;
     bool enable_preprocessor = true;  // Enabled by default
     bool trace_preprocessor = false;
@@ -150,6 +154,7 @@ int main(int argc, char* argv[]) {
 
     // Set individual trace flags based on global tracing or specific flags
     g_enable_lexer_trace = enable_tracing || trace_lexer;
+    bool enable_debug_output = enable_tracing || trace_codegen; // <-- Declare as local variable
     HeapManager::getInstance().setTraceEnabled(enable_tracing || trace_heap);
     if (enable_tracing || trace_runtime) {
         RuntimeManager::instance().enableTracing();
@@ -204,6 +209,15 @@ int main(int argc, char* argv[]) {
         Lexer lexer(g_source_code, enable_tracing || trace_lexer);
         Parser parser(lexer, enable_tracing || trace_parser);
         ProgramPtr ast = parser.parse_program();
+        // ** NEW ERROR HANDLING BLOCK **
+        if (!parser.getErrors().empty()) {
+            std::cerr << "\nCompilation failed due to the following syntax error(s):" << std::endl;
+            for (const auto& err : parser.getErrors()) {
+                std::cerr << "  " << err << std::endl;
+            }
+            return 1; // Exit before code generation
+        }
+
         if (enable_tracing || trace_parser) {
             std::cout << "Parsing complete. AST built.\n";
         }
@@ -237,7 +251,7 @@ int main(int argc, char* argv[]) {
         if (enable_tracing || trace_symbols || trace_runtime) std::cout << "Registering runtime functions in symbol table...\n";
         RuntimeSymbols::registerAll(*symbol_table);
 
-        if (enable_tracing || trace_symbols) std::cout << "Symbol table construction complete.\n";
+
 
         if (enable_opt) {
             if (enable_tracing || trace_optimizer) std::cout << "Optimization enabled. Applying passes...\n";
@@ -246,8 +260,16 @@ int main(int argc, char* argv[]) {
             StrengthReductionPass strength_reduction_pass(trace_optimizer);
             strength_reduction_pass.run(*ast);
 
-            CommonSubexpressionEliminationPass cse_pass(g_global_manifest_constants);
-            ast = cse_pass.apply(std::move(ast));
+            // (CSE pass removed; now handled after CFG construction)
+
+            // Loop-Invariant Code Motion Pass (LICM)
+            ASTAnalyzer& analyzer = ASTAnalyzer::getInstance();
+            LoopInvariantCodeMotionPass licm_pass(
+                g_global_manifest_constants,
+                *symbol_table,
+                analyzer
+            );
+            ast = licm_pass.apply(std::move(ast));
         }
 
         // TEMPORARILY DISABLED: Boolean short-circuiting pass due to memory management issues
@@ -260,22 +282,32 @@ int main(int argc, char* argv[]) {
             std::cout << "----------------------------------\n\n";
         }
 
-        ASTAnalyzer& analyzer = ASTAnalyzer::getInstance();
+// Now that we have a symbol table, pass it to the analyzer
+analyzer.analyze(*ast, symbol_table.get());
+// --- Synchronize improved type info from analyzer to symbol table ---
+for (const auto& func_pair : analyzer.get_function_metrics()) {
+    const std::string& func_name = func_pair.first;
+    const auto& metrics = func_pair.second;
+    for (const auto& var_pair : metrics.variable_types) {
+        const std::string& var_name = var_pair.first;
+        VarType new_type = var_pair.second;
+        symbol_table->updateSymbolType(var_name, new_type);
+    }
+}
+if (enable_tracing || trace_ast) {
+   std::cout << "Initial AST analysis complete.\n";
+   analyzer.print_report();
+}
+if (enable_tracing || trace_symbols) {
+    std::cout << "Symbol table construction complete.\n";
+    symbol_table->dumpTable();
+}
 
-    
-       // Now that we have a symbol table, pass it to the analyzer
-       analyzer.analyze(*ast, symbol_table.get());
-       if (enable_tracing || trace_ast) {
-           std::cout << "Initial AST analysis complete.\n";
-           analyzer.print_report();
-       }
-
- 
-       analyzer.transform(*ast);
-       if (enable_tracing || trace_ast) std::cout << "AST transformation complete.\n";
+analyzer.transform(*ast);
+if (enable_tracing || trace_ast) std::cout << "AST transformation complete.\n";
 
 
- 
+
         if (enable_tracing || trace_cfg) std::cout << "Building Control Flow Graphs...\n";
         CFGBuilderPass cfg_builder(enable_tracing || trace_cfg);
         cfg_builder.build(*ast);
@@ -286,7 +318,14 @@ int main(int argc, char* argv[]) {
             }
         }
 
- 
+        // --- Local Optimization Pass (CSE/LVN) ---
+        if (enable_opt) {
+            if (enable_tracing || trace_optimizer) std::cout << "Applying Local Optimization Pass (CSE/LVN)...\n";
+            LocalOptimizationPass local_opt_pass;
+            local_opt_pass.run(cfg_builder.get_cfgs(), *symbol_table, analyzer);
+        }
+
+
         if (enable_tracing || trace_liveness) std::cout << "Running Liveness Analysis...\n";
         LivenessAnalysisPass liveness_analyzer(cfg_builder.get_cfgs(), enable_tracing || trace_liveness);
         liveness_analyzer.run();
@@ -294,7 +333,7 @@ int main(int argc, char* argv[]) {
             liveness_analyzer.print_results();
         }
 
-     
+
         if (enable_tracing || trace_liveness) std::cout << "Updating register pressure from liveness data...\n";
         auto pressure_results = liveness_analyzer.calculate_register_pressure();
 
@@ -309,22 +348,28 @@ int main(int argc, char* argv[]) {
                 function_metrics.at(func_name).max_live_variables = pressure;
             }
         }
-     
+
+
+        // --- Dump persistent symbol log before code generation if tracing is enabled ---
+        if (enable_tracing || trace_symbols) {
+            SymbolLogger::getInstance().dumpLog();
+        }
 
         // --- Code Generation ---
-        InstructionStream instruction_stream(LabelManager::instance());
+        InstructionStream instruction_stream(LabelManager::instance(), enable_tracing || trace_codegen);
         DataGenerator data_generator(enable_tracing || trace_codegen);
         RegisterManager& register_manager = RegisterManager::getInstance();
         LabelManager& label_manager = LabelManager::instance();
         int debug_level = (enable_tracing || trace_codegen) ? 5 : 0;
 
         // --- Allocate JIT data pool before code generation ---
-        const size_t JIT_DATA_POOL_SIZE = 512 * 1024;
+        const size_t JIT_DATA_POOL_SIZE = 1024 * 1024; // New 1MB size
         // supports 32k 64bit global variables.
 
-        void* jit_data_memory_base = mmap(nullptr, JIT_DATA_POOL_SIZE, PROT_READ | PROT_WRITE,
-                                          MAP_PRIVATE | MAP_ANON, -1, 0);
-        if (jit_data_memory_base == MAP_FAILED) {
+        g_jit_data_manager = std::make_unique<JITMemoryManager>();
+        g_jit_data_manager->allocate(JIT_DATA_POOL_SIZE);
+        void* jit_data_memory_base = g_jit_data_manager->getMemoryPointer();
+        if (!jit_data_memory_base) {
             std::cerr << "Failed to allocate JIT data pool." << std::endl;
             return 1;
         }
@@ -339,19 +384,17 @@ int main(int argc, char* argv[]) {
             data_generator,
             reinterpret_cast<uint64_t>(jit_data_memory_base),
             cfg_builder, // <-- Pass the CFGBuilderPass object
-            std::move(symbol_table) // <-- Pass the populated symbol table
+            std::move(symbol_table), // <-- Pass the populated symbol table
+            run_jit // <-- Pass is_jit_mode: true for JIT, false for static/exec
         );
         code_generator.generate_code(*ast);
         if (enable_tracing || trace_codegen) std::cout << "Code generation complete.\n";
 
-        data_generator.generate_rodata_section(instruction_stream);
-        data_generator.generate_data_section(instruction_stream);
         // Populate the JIT data segment with initial values for globals
           if (enable_tracing || trace_codegen) std::cout << "Data sections generated.\n";
 
 
         if (enable_peephole) {
-            std::cout << "Running peephole optimizer...\n";
             PeepholeOptimizer peephole_optimizer(enable_tracing || trace_codegen);
             peephole_optimizer.optimize(instruction_stream);
         }
@@ -363,11 +406,23 @@ int main(int argc, char* argv[]) {
             handle_static_compilation(exec_mode, base_name, instruction_stream, data_generator, enable_tracing || trace_codegen);
         }
 
+        // --- ADD THIS LINE TO RESET THE LABEL MANAGER ---
+        LabelManager::instance().reset();
+        // --- END OF ADDITION ---
+
         if (run_jit) {
             void* code_buffer_base = handle_jit_compilation(jit_data_memory_base, instruction_stream, g_jit_breakpoint_offset, enable_tracing || trace_codegen);
 
             // --- Populate the runtime function pointer table before populating the data segment and executing code ---
             RuntimeManager::instance().populate_function_pointer_table(jit_data_memory_base);
+
+            // Make the first 512KB (runtime table) read-only
+            if (g_jit_data_manager) {
+                g_jit_data_manager->makeReadOnly(512 * 1024, 512 * 1024);
+                if (enable_debug_output) {
+                    std::cout << "Set runtime function table memory to read-only.\n";
+                }
+            }
 
             data_generator.populate_data_segment(jit_data_memory_base, label_manager);
 
@@ -422,6 +477,7 @@ bool parse_arguments(int argc, char* argv[], bool& run_jit, bool& generate_asm, 
         else if (arg == "--asm" || arg == "-a") generate_asm = true;
         else if (arg == "--exec" || arg == "-e") exec_mode = true;
         else if (arg == "--opt" || arg == "-o") enable_opt = true;
+        else if (arg == "--nopt") enable_opt = false;
         else if (arg == "--trace" || arg == "-T") enable_tracing = true;
         else if (arg == "--trace-lexer") trace_lexer = true;
         else if (arg == "--trace-parser") trace_parser = true;
@@ -440,6 +496,7 @@ bool parse_arguments(int argc, char* argv[], bool& run_jit, bool& generate_asm, 
         else if (arg == "--dump-jit-stack") dump_jit_stack = true;
         else if (arg == "--stack-canaries") enable_stack_canaries = true;
         else if (arg == "--format") format_code = true;
+        else if (arg == "--nopt") enable_opt = false;
         else if (arg == "-I" || arg == "--include-path") {
             if (i + 1 < argc) include_paths.push_back(argv[++i]);
             else {
@@ -470,7 +527,22 @@ bool parse_arguments(int argc, char* argv[], bool& run_jit, bool& generate_asm, 
                       << "  --run, -r              : JIT compile and execute the code.\n"
                       << "  --asm, -a              : Generate ARM64 assembly file.\n"
                       << "  --exec, -e             : Assemble, build with clang, and execute.\n"
-                      << "  --opt, -o              : Enable AST-to-AST optimization passes.\n"
+                      << "  --opt, -o              : Enable AST-to-AST optimization passes (default: ON).\n"
+                      << "  --nopt                 : Disable all AST-to-AST optimization passes.\n"
+                      << "  --popt                 : Enable peephole optimizer (enabled by default).\n"
+                      << "  --nopeep               : Disable peephole optimizer.\n"
+                      << "  --no-preprocessor      : Disable GET directive processing.\n"
+                      << "  --stack-canaries       : Enable stack canaries for buffer overflow detection.\n"
+                      << "  -I path, --include-path path : Add directory to include search path for GET directives.\n"
+                      << "                          Multiple -I flags can be specified for additional paths.\n"
+                      << "                          Search order: 1) Current file's directory 2) Specified include paths\n"
+                      << "  --dump-jit-stack       : Dumps the JIT stack memory after execution.\n"
+                      << "  --call name, -c name   : JIT-call the routine with the given label.\n"
+                      << "  --break label[+/-off]  : Insert a BRK #0 instruction at the specified label, with optional offset.\n"
+                      << "  --format               : Format BCPL source code and output to stdout.\n"
+                      << "  --help, -h             : Display this help message.\n"
+                      << "\n"
+                      << "Tracing Options (for debugging and development):\n"
                       << "  --trace, -T            : Enable all detailed tracing (verbose).\n"
                       << "  --trace-lexer          : Enable lexer tracing.\n"
                       << "  --trace-parser         : Enable parser tracing.\n"
@@ -482,18 +554,7 @@ bool parse_arguments(int argc, char* argv[], bool& run_jit, bool& generate_asm, 
                       << "  --trace-runtime        : Enable runtime function tracing.\n"
                       << "  --trace-symbols        : Enable symbol table construction tracing.\n"
                       << "  --trace-heap           : Enable heap manager tracing.\n"
-                      << "  --popt                 : Enable peephole optimizer (disabled by default).\n"
-                      << "  --trace-preprocessor   : Enable preprocessor tracing.\n"
-                      << "  --no-preprocessor      : Disable GET directive processing.\n"
-                      << "  --stack-canaries       : Enable stack canaries for buffer overflow detection.\n"
-                      << "  -I path, --include-path path : Add directory to include search path for GET directives.\n"
-                      << "                          Multiple -I flags can be specified for additional paths.\n"
-                      << "                          Search order: 1) Current file's directory 2) Specified include paths\n"
-                      << "  --dump-jit-stack       : Dumps the JIT stack memory after execution.\n"
-                      << "  --call name, -c name   : JIT-call the routine with the given label.\n"
-                      << "  --break label[+/-off]  : Insert a BRK #0 instruction at the specified label, with optional offset.\n"
-                      << "  --format               : Format BCPL source code and output to stdout.\n"
-                      << "  --help, -h             : Display this help message.\n";
+                      << "  --trace-preprocessor   : Enable preprocessor tracing.\n";
             return false;
         } else if (input_filepath.empty() && arg[0] != '-') {
             input_filepath = arg;
@@ -532,7 +593,7 @@ void handle_static_compilation(bool exec_mode, const std::string& base_name, con
     if (exec_mode) {
         if (enable_debug_output) std::cout << "\n--- Exec Mode (via clang) ---\n";
         std::string executable_output_path = "testrun";
-        std::string clang_command = "clang -g -o " + executable_output_path  + " " + asm_output_path + " bcpl_runtime.o";
+        std::string clang_command = "clang -g -o " + executable_output_path  + " starter.o " + asm_output_path + " bcpl_runtime.o";
        if (enable_debug_output) std::cout << "Executing: " << clang_command << std::endl;
 
         int build_result = system(clang_command.c_str());
@@ -596,7 +657,7 @@ void* handle_jit_compilation(void* jit_data_memory_base, InstructionStream& inst
             }
 
             case SegmentType::DATA: {
-               
+
                 size_t offset = instr.address - reinterpret_cast<size_t>(jit_data_memory_base);
                 char* dest = static_cast<char*>(jit_data_memory_base) + offset;
 

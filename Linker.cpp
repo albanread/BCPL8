@@ -91,47 +91,33 @@ std::vector<Instruction> Linker::process(
      for (const auto& instr : stream.get_instructions()) {
          Instruction new_instr = instr;
 
+         // Determine which cursor to use based on the segment
+         size_t* current_cursor = nullptr;
          switch (instr.segment) {
-             case SegmentType::CODE:
-                 if (instr.is_label_definition) {
-                     manager.define_label(instr.target_label, code_cursor);
-                     if (enable_tracing) {
-                          std::cerr << "[LINKER-PASS1] Defined CODE label '" << instr.target_label
-                                   << "' at 0x" << std::hex << code_cursor << std::dec << "\n";
-                     }
-                 } else {
-                     new_instr.address = code_cursor;
-                     code_cursor += 4;
-                 }
-                 break;
-
-             case SegmentType::RODATA:
-                 if (instr.is_label_definition) {
-                     manager.define_label(instr.target_label, rodata_cursor);
-                      if (enable_tracing) {
-                          std::cerr << "[LINKER-PASS1] Defined RODATA label '" << instr.target_label
-                                   << "' at 0x" << std::hex << rodata_cursor << std::dec << "\n";
-                     }
-                 } else {
-                     new_instr.address = rodata_cursor;
-                     rodata_cursor += 4;
-                 }
-                 break;
-
-             case SegmentType::DATA:
-                 if (instr.is_label_definition) {
-                     manager.define_label(instr.target_label, data_cursor);
-                      if (enable_tracing) {
-                          std::cerr << "[LINKER-PASS1] Defined DATA label '" << instr.target_label
-                                   << "' at 0x" << std::hex << data_cursor << std::dec << "\n";
-                     }
-                 } else {
-                     new_instr.address = data_cursor;
-                     // Always increment by 4 bytes for each data instruction
-                     data_cursor += 4;
-                 }
-                 break;
+             case SegmentType::CODE:   current_cursor = &code_cursor;   break;
+             case SegmentType::RODATA: current_cursor = &rodata_cursor; break;
+             case SegmentType::DATA:   current_cursor = &data_cursor;   break;
          }
+         if (!current_cursor) continue;
+
+         // --- START OF FIX ---
+
+         // Step 1: Always define a label if the instruction has one.
+         if (instr.is_label_definition) {
+             manager.define_label(instr.target_label, *current_cursor);
+         }
+
+         // Step 2: Always advance the cursor if the instruction emits data/code.
+         // A pure label definition (from Instruction::as_label) has no assembly text and is not a data value.
+         bool emits_data_or_code = !instr.assembly_text.empty() || instr.is_data_value;
+
+         if (emits_data_or_code) {
+             new_instr.address = *current_cursor;
+             *current_cursor += 4; // All entries in the stream are 4 bytes.
+         }
+
+         // --- END OF FIX ---
+
          finalized_instructions.push_back(new_instr);
      }
 
@@ -193,6 +179,18 @@ void Linker::performRelocations(
                 instr.encoding = apply_movz_movk_relocation(instr.encoding, target_address, instr.relocation);
                 break;
 
+            case RelocationType::ABSOLUTE_ADDRESS_LO32: {
+                // The target_address is the full 64-bit address of the label.
+                // We write the lower 32 bits into this instruction's encoding.
+                instr.encoding = static_cast<uint32_t>(target_address & 0xFFFFFFFF);
+                break;
+            }
+            case RelocationType::ABSOLUTE_ADDRESS_HI32: {
+                // The target_address is the full 64-bit address of the label.
+                // We write the upper 32 bits into this instruction's encoding.
+                instr.encoding = static_cast<uint32_t>(target_address >> 32);
+                break;
+            }
             default:
                 // Do nothing for NONE or other unhandled types.
                 break;
