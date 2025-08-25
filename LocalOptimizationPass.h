@@ -37,8 +37,14 @@ private:
     std::unordered_map<std::string, std::string> available_expressions_;
     int temp_var_counter_;
 
+    // --- NEW: Map from canonical expression string to count for analysis stage ---
+    std::unordered_map<std::string, int> expr_counts_;
+
     // Generate a unique temporary variable name for hoisted expressions
     std::string generate_temp_var_name();
+
+    // Infer the type of an expression (INTEGER or FLOAT)
+    VarType infer_expression_type(const Expression* expr);
 
     // Apply CSE and other local optimizations to a single basic block
     void optimize_basic_block(BasicBlock* block,
@@ -57,4 +63,7 @@ private:
 
     // Helper: Get the canonical string for an expression (for CSE)
     std::string expression_to_string(const Expression* expr) const;
+
+    // --- NEW: Helper to count subexpressions for analysis stage ---
+    void count_subexpressions(ASTNode* node);
 };

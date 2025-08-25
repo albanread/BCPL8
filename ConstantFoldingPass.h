@@ -27,6 +27,9 @@ public:
     void visit(NumberLiteral& node) override;
     void visit(BooleanLiteral& node) override;
     void visit(VariableAccess& node) override; // NEW
+    void visit(AssignmentStatement& node) override;
+    void visit(FunctionDeclaration& node) override;
+    void visit(RoutineDeclaration& node) override;
 
     // --- Added for control flow constant folding and dead branch elimination ---
     void visit(IfStatement& node) override;
@@ -45,6 +48,9 @@ public:
     void visit(GlobalVariableDeclaration& node) override;
 
 private:
+    // Add this map to track variables known to be constant within the current scope.
+    std::unordered_map<std::string, int64_t> known_constants_;
+
     // Helper to evaluate an expression to a constant integer value.
     OptionalValue<int64_t> evaluate_integer_constant(Expression* expr) const;
     

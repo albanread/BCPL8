@@ -58,6 +58,11 @@ private:
 
     // ASTVisitor overrides
     void visit(Program& node) override;
+    void visit(ForEachStatement& node) override;
+
+    // Helpers for FOREACH/FFOREACH CFG construction
+    void build_vector_foreach_cfg(ForEachStatement& node);
+    void build_list_foreach_cfg(ForEachStatement& node);
     void visit(LetDeclaration& node) override;
     void visit(ManifestDeclaration& node) override;
     void visit(StaticDeclaration& node) override;

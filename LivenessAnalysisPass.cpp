@@ -177,8 +177,8 @@ void LivenessAnalysisPass::visit(EndcaseStatement& node) {
     // No variable use
 }
 
-void LivenessAnalysisPass::visit(ResultisStatement& node) {
-    if (node.expression) node.expression->accept(*this);
+void LivenessAnalysisPass::visit(FreeStatement& node) {
+    if (node.list_expr) node.list_expr->accept(*this);
 }
 
 void LivenessAnalysisPass::visit(CompoundStatement& node) {
@@ -195,11 +195,13 @@ void LivenessAnalysisPass::visit(BlockStatement& node) {
 
 void LivenessAnalysisPass::visit(StringStatement& node) {
     // No variable use
-}
+    }
 
-void LivenessAnalysisPass::visit(FreeStatement& node) {
-    if (node.expression_) node.expression_->accept(*this);
-}
+    void LivenessAnalysisPass::visit(ResultisStatement& node) {
+        if (node.expression) node.expression->accept(*this);
+    }
+
+
 
 void LivenessAnalysisPass::visit(LabelTargetStatement& node) {
     // LabelTargetStatement only has a labelName (no statement/command to visit)

@@ -315,8 +315,8 @@ void Optimizer::visit(EndcaseStatement& node) {
     // No children to visit.
 }
 
-void Optimizer::visit(ResultisStatement& node) {
-    node.expression = visit_expr(std::move(node.expression));
+void Optimizer::visit(FreeStatement& node) {
+    node.list_expr = visit_expr(std::move(node.list_expr));
 }
 
 void Optimizer::visit(CompoundStatement& node) {
@@ -367,11 +367,13 @@ void Optimizer::visit(LabelTargetStatement& node) {
 
 void Optimizer::visit(ConditionalBranchStatement& node) {
     // No children to visit.
-}
+    }
 
-void Optimizer::visit(FreeStatement& node) {
-    node.expression_ = visit_expr(std::move(node.expression_));
-}
+    void Optimizer::visit(ResultisStatement& node) {
+        if (node.expression) node.expression->accept(*this);
+    }
+
+
 
 void Optimizer::visit(VecAllocationExpression& node) {
     node.size_expr = visit_expr(std::move(node.size_expr));

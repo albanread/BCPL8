@@ -50,6 +50,15 @@ std::string to_string(UnaryOp::Operator op) {
         case UnaryOp::Operator::Indirection: return "Indirection";
         case UnaryOp::Operator::LogicalNot: return "LogicalNot";
         case UnaryOp::Operator::Negate: return "Negate";
+        case UnaryOp::Operator::FloatConvert: return "FloatConvert";
+        case UnaryOp::Operator::FloatSqrt: return "FloatSqrt";
+        case UnaryOp::Operator::HeadOf: return "HeadOf";
+        case UnaryOp::Operator::HeadOfAsFloat: return "HeadOfAsFloat";
+        case UnaryOp::Operator::TailOf: return "TailOf";
+        case UnaryOp::Operator::TailOfNonDestructive: return "TailOfNonDestructive (REST)";
+        case UnaryOp::Operator::LengthOf: return "LengthOf (LEN)";
+        case UnaryOp::Operator::FloatFloor: return "FloatFloor (ENTIER)";
+        case UnaryOp::Operator::FloatTruncate: return "FloatTruncate (TRUNC)";
         default: return "UnknownUnaryOp";
     }
 }
@@ -72,7 +81,7 @@ void DebugPrinter::visit(ConditionalBranchStatement& node) {
 
 void DebugPrinter::visit(FreeStatement& node) {
     print_line("FreeStatement:");
-    print_child(node.expression_);
+    print_child(node.list_expr);
 }
 
 void DebugPrinter::print_indent() {

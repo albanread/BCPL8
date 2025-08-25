@@ -11,20 +11,22 @@ enum class OpType {
     ADD, SUB, SUBS,
     MUL, MADD, FADD, FSUB, FMUL, FMSUB, FMADD,
     DIV, SDIV, FDIV,
-    AND, ORR, EOR,
+    AND, ORR, EOR, BIC,
     CMP, FCMP,
     STR, LDR, LDUR, LDRB, STP, LDP, STR_FP, LDR_FP, STR_WORD, LDR_WORD, LDR_SCALED,
-    B, BL, BR, BLR, RET, B_COND, ADRP,
+    B, BL, BR, BLR, RET, B_COND, ADRP, ADR,
     NOP, DMB, BRK, SVC, DIRECTIVE,
     // Bitfield & Shift
-    LSL, LSR, ASR, UBFX, SBFX,
+    LSL, LSR, ASR, UBFX, SBFX, BFI,
     // Conditional
     CSET, CSETM, CSINV,
     CBZ, CBNZ,
     // Conversion
-    SCVTF, FCVTZS,
+    SCVTF, FCVTZS, FCVTMS,
     // Vector/SIMD
-    FMLA_VECTOR, FMUL_VECTOR, ADD_VECTOR, LD1_VECTOR, FADD_VECTOR, MUL_VECTOR
+    FMLA_VECTOR, FMUL_VECTOR, ADD_VECTOR, LD1_VECTOR, FADD_VECTOR, MUL_VECTOR,
+    // Floating-point Math
+    FSQRT
 };
 
 } // namespace InstructionDecoder
