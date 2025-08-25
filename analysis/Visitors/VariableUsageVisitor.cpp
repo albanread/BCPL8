@@ -165,5 +165,5 @@ void VariableUsageVisitor::visit(BlockStatement& node) {
 }
 
 void VariableUsageVisitor::visit(FreeStatement& node) {
-    if (node.expression_) node.expression_->accept(*this);
+    if (node.list_expr) node.list_expr->accept(*this);
 }
