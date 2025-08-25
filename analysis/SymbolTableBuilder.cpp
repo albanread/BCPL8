@@ -1,5 +1,6 @@
 #include "SymbolTableBuilder.h"
 #include <iostream>
+#include "analysis/ASTAnalyzer.h"
 
 
 
@@ -45,8 +46,13 @@ void SymbolTableBuilder::visit(LetDeclaration& node) {
     for (size_t i = 0; i < node.names.size(); i++) {
         const std::string& name = node.names[i];
         
-        // Determine type (let is for integers, flet is for floats)
-        VarType type = node.is_float_declaration ? VarType::FLOAT : VarType::INTEGER;
+        // Determine type (let is for integers, flet is for floats, or infer from initializer)
+        VarType type;
+        if (node.initializers.size() > i && node.initializers[i]) {
+            type = ASTAnalyzer::getInstance().infer_expression_type(node.initializers[i].get());
+        } else {
+            type = node.is_float_declaration ? VarType::FLOAT : VarType::INTEGER;
+        }
         
         // Add the variable to the current scope
         if (!symbol_table_->addSymbol(name, SymbolKind::LOCAL_VAR, type)) {
@@ -73,15 +79,15 @@ void SymbolTableBuilder::visit(ManifestDeclaration& node) {
 
 void SymbolTableBuilder::visit(StaticDeclaration& node) {
     trace("Processing static declaration: " + node.name);
-    
+
     // Add the static variable to the symbol table (at global scope)
     // Even though static variables have local scope visibility, they live in global storage
-    
-    // Determine the type (default to INTEGER)
+
+    // Determine the type: use explicit FSTATIC if present, otherwise infer from initializer
     VarType type = VarType::INTEGER;
-    
-    // Try to infer from the initializer if it's a float literal
-    if (node.initializer && node.initializer->getType() == ASTNode::NodeType::NumberLit) {
+    if (node.is_float_declaration) {
+        type = VarType::FLOAT;
+    } else if (node.initializer && node.initializer->getType() == ASTNode::NodeType::NumberLit) {
         auto* num_lit = static_cast<NumberLiteral*>(node.initializer.get());
         if (num_lit->literal_type == NumberLiteral::LiteralType::Float) {
             type = VarType::FLOAT;

@@ -15,27 +15,7 @@
 // VarType is now defined in DataTypes.h
 // Removed custom optional implementation
 
-/**
- * @struct FunctionMetrics
- * @brief Stores collected data and metrics for a single function or routine.
- */
-struct FunctionMetrics {
-    int num_parameters = 0;
-    int num_variables = 0;      // Will now represent INTEGER variables
-    int num_runtime_calls = 0;
-    int num_local_function_calls = 0;
-    int num_local_routine_calls = 0;
-    bool has_vector_allocations = false;
-    bool accesses_globals = false;
-    std::map<std::string, int> parameter_indices;
-    int max_live_variables = 0; // Track peak register pressure for this function
 
-    // START of new members
-    int num_float_parameters = 0; // For future use
-    int num_float_variables = 0;
-    std::map<std::string, VarType> variable_types;
-    // END of new members
-};
 
 /**
  * @class ASTAnalyzer
@@ -52,12 +32,16 @@ class ASTAnalyzer : public ASTVisitor {
     void print_report() const;
 
     // Get the symbol table
+    void visit(ListExpression& node) override;
     SymbolTable* get_symbol_table() const { return symbol_table_; }
 
     const std::map<std::string, FunctionMetrics>& get_function_metrics() const { return function_metrics_; }
     std::map<std::string, FunctionMetrics>& get_function_metrics_mut() { return function_metrics_; }
     const std::map<std::string, std::string>& get_variable_definitions() const { return variable_definitions_; }
     const ForStatement& get_for_statement(const std::string& unique_name) const;
+
+    // Infer the type of an expression (INTEGER, FLOAT, POINTER, etc.)
+    VarType infer_expression_type(const Expression* expr) const;
     bool function_accesses_globals(const std::string& function_name) const;
     int64_t evaluate_constant_expression(Expression* expr, bool* has_value) const;
     bool is_local_routine(const std::string& name) const;
@@ -73,10 +57,12 @@ class ASTAnalyzer : public ASTVisitor {
     void visit(RoutineDeclaration& node) override;
     void visit(BlockStatement& node) override;
     void visit(ForStatement& node) override;
+    void visit(ForEachStatement& node) override;
     void visit(FunctionCall& node) override;
     void visit(RoutineCallStatement& node) override;
     void visit(VariableAccess& node) override;
     void visit(VecAllocationExpression& node) override;
+    void visit(VecInitializerExpression& node) override;
     void visit(SwitchonStatement& node) override;
     void visit(ManifestDeclaration& node) override;
     void visit(StaticDeclaration& node) override;
@@ -91,6 +77,7 @@ class ASTAnalyzer : public ASTVisitor {
     void visit(VectorAccess& node) override;
     void visit(CharIndirection& node) override;
     void visit(FloatVectorIndirection& node) override;
+    void visit(BitfieldAccessExpression& node) override;
     void visit(ConditionalExpression& node) override;
     void visit(ValofExpression& node) override;
     void visit(StringAllocationExpression& node) override;
@@ -133,6 +120,11 @@ class ASTAnalyzer : public ASTVisitor {
     // --- Scope Management ---
     std::string current_function_scope_;
     std::string current_lexical_scope_;
+
+public:
+    // Expose setter and getter for current_function_scope_
+    void set_current_function_scope(const std::string& scope) { current_function_scope_ = scope; }
+    std::string get_current_function_scope() const { return current_function_scope_; }
 
     // --- Data Members ---
     std::map<std::string, FunctionMetrics> function_metrics_;
