@@ -319,7 +319,7 @@ void ManifestResolutionPass::visit(SysCall& node) {
 void ManifestResolutionPass::visit(StaticDeclaration& node) { node.initializer = visit_expr(std::move(node.initializer)); }
 void ManifestResolutionPass::visit(GlobalDeclaration& node) {}
 void ManifestResolutionPass::visit(LabelDeclaration& node) { node.command = visit_stmt(std::move(node.command)); }
-void ManifestResolutionPass::visit(FreeStatement& node) { node.expression_ = visit_expr(std::move(node.expression_)); }
+void ManifestResolutionPass::visit(FreeStatement& node) { node.list_expr = visit_expr(std::move(node.list_expr)); }
 void ManifestResolutionPass::visit(LabelTargetStatement& node) {}
 void ManifestResolutionPass::visit(ConditionalBranchStatement& node) {}
 void ManifestResolutionPass::visit(BreakStatement& node) {}
