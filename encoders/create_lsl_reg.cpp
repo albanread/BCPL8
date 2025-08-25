@@ -87,7 +87,7 @@ Instruction Encoder::create_lsl_reg(const std::string& xd, const std::string& xn
 
     // (B) Use BitPatcher to construct the instruction word.
     // Base opcode for 32-bit LSLV is 0x1AC00800, which contains all fixed bits.
-    BitPatcher patcher(0x1AC00800);
+    BitPatcher patcher(0x1AC02000); 
 
     if (rd_is_64) {
         patcher.patch(1, 31, 1); // Set the sf bit for 64-bit operation.

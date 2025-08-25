@@ -23,11 +23,12 @@
  * @param xt The destination register (e.g., "x0", "w0").
  * @param xn The base address register (e.g., "x2", "sp").
  * @param immediate The unsigned byte offset. For 64-bit loads, this must be a multiple of 8 in the range [0, 32760]. For 32-bit, a multiple of 4 in [0, 16380].
+ * @param variable_name (optional) The variable name to append as a comment.
  * @return An `Instruction` object.
  * @throw std::invalid_argument for invalid registers, out-of-range/unaligned immediates, or using a 32-bit base register.
  */
-Instruction Encoder::create_ldr_imm(const std::string& xt, const std::string& xn, int immediate) {
-    // Ensure proper closing of all braces in the function body.
+
+Instruction Encoder::create_ldr_imm(const std::string& xt, const std::string& xn, int immediate, const std::string& variable_name) {
     auto parse_register = [](const std::string& reg_str) -> std::pair<uint32_t, bool> {
         if (reg_str.empty()) throw std::invalid_argument("Register string cannot be empty.");
         std::string lower_reg = reg_str;
@@ -51,12 +52,12 @@ Instruction Encoder::create_ldr_imm(const std::string& xt, const std::string& xn
             }
         }
         return {reg_num, is_64bit};
-    }; // Closing the parse_register lambda
+    };
 
-    auto [rt_num, rt_is_64] = parse_register(xt); // Parse destination register
-    auto [rn_num, rn_is_64] = parse_register(xn); // Parse base register
+    auto [rt_num, rt_is_64] = parse_register(xt);
+    auto [rn_num, rn_is_64] = parse_register(xn);
 
-    if (!rn_is_64) { // Ensure base register is 64-bit
+    if (!rn_is_64) {
         throw std::invalid_argument("LDR base register must be a 64-bit 'X' register or SP.");
     }
 
@@ -64,28 +65,31 @@ Instruction Encoder::create_ldr_imm(const std::string& xt, const std::string& xn
     int scale;
     int max_offset;
 
-    if (rt_is_64) { // Handle 64-bit LDR
+    if (rt_is_64) {
         base_opcode = 0xF9400000;
         scale = 8;
         max_offset = 32760;
-    } else { // Handle 32-bit LDR
+    } else {
         base_opcode = 0xB9400000;
         scale = 4;
         max_offset = 16380;
     }
 
-    // Ensure immediate is aligned and within range
     if (immediate % scale != 0 || immediate < 0 || immediate > max_offset) {
         throw std::invalid_argument("Immediate value out of range or not aligned.");
     }
-    
-    std::string assembly_text = "LDR " + xt + ", [" + xn;
-      if (immediate != 0) {
-          assembly_text += ", #" + std::to_string(immediate);
-      }
-      assembly_text += "]";
 
-    // Construct the instruction
+    std::string assembly_text = "LDR " + xt + ", [" + xn;
+    if (immediate != 0) {
+        assembly_text += ", #" + std::to_string(immediate);
+    }
+    assembly_text += "]";
+
+    // Append the variable name to the comment if provided
+    if (!variable_name.empty() && assembly_text.find(variable_name) == std::string::npos) {
+        assembly_text += " ; " + variable_name;
+    }
+
     uint32_t instruction = base_opcode | ((immediate / scale) << 10) | (rn_num << 5) | rt_num;
     Instruction instr(instruction, assembly_text);
     instr.opcode = InstructionDecoder::OpType::LDR;
@@ -96,3 +100,4 @@ Instruction Encoder::create_ldr_imm(const std::string& xt, const std::string& xn
     instr.is_mem_op = true;
     return instr;
 }
+

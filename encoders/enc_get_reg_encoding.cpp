@@ -7,10 +7,10 @@
 /**
  * @brief Helper function to get the 5-bit integer encoding of a register name.
  * @details
- * This function translates a register name string (e.g., "X0", "w1", "sp", "D0") into
+ * This function translates a register name string (e.g., "X0", "w1", "sp", "D0", "V0") into
  * its 5-bit hardware encoding (0-31). It is case-insensitive and handles aliases
  * for the stack pointer (SP) and zero register (WZR/XZR), as well as floating-point
- * registers (D0-D31).
+ * and vector registers (D0-D31, V0-V31).
  *
  * @param reg_name The register name as a string.
  * @return The 5-bit integer encoding of the register.
@@ -37,17 +37,15 @@ uint32_t Encoder::get_reg_encoding(const std::string& reg_name) {
     }
 
     try {
-        // Special handling for different register types
-        if (prefix == 'd') {
-            // Floating-point registers (D0-D31)
+        // Handle different register types
+        if (prefix == 'd' || prefix == 'v') { // Added 'v' for vector registers
             uint32_t reg_num = std::stoul(lower_reg.substr(1));
             if (reg_num > 31) {
-                throw std::out_of_range("Floating-point register number " + std::to_string(reg_num) + 
+                throw std::out_of_range("FP/Vector register number " + std::to_string(reg_num) + 
                                       " is out of the valid range [0, 31].");
             }
             return reg_num;
         } else if (prefix == 'w' || prefix == 'x') {
-            // General-purpose registers (W0-W30, X0-X30)
             uint32_t reg_num = std::stoul(lower_reg.substr(1));
             if (reg_num > 31) {
                 throw std::out_of_range("Register number " + std::to_string(reg_num) + 
@@ -56,7 +54,7 @@ uint32_t Encoder::get_reg_encoding(const std::string& reg_name) {
             return reg_num;
         } else {
             throw std::invalid_argument("Invalid register prefix in '" + reg_name + 
-                                     "'. Must be 'w', 'x', or 'd'.");
+                                     "'. Must be 'w', 'x', 'd', or 'v'.");
         }
     } catch (const std::logic_error&) {
         throw std::invalid_argument("Invalid register format: " + reg_name);

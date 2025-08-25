@@ -86,8 +86,8 @@ Instruction Encoder::create_lsr_reg(const std::string& xd, const std::string& xn
     }
 
     // (B) Use BitPatcher to construct the instruction word.
-    // Base opcode for 32-bit LSRV is 0x1AC00C00.
-    BitPatcher patcher(0x1AC00C00);
+    // Base opcode for 32-bit LSRV is 0x1AC02400.
+    BitPatcher patcher(0x1AC02400);
 
     if (rd_is_64) {
         patcher.patch(1, 31, 1); // Set the sf bit for 64-bit operation.
