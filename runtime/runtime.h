@@ -8,6 +8,29 @@
 extern "C" {
 #endif
 
+// SPLIT and JOIN string/list functions
+struct ListHeader;
+struct ListAtom;
+/**
+ * BCPL strings are represented as pointers to arrays of 32-bit Unicode code points (UTF-32).
+ * The payload pointer points to the character data, not the length prefix.
+ */
+uint32_t* BCPL_JOIN_LIST(struct ListHeader* list_header, uint32_t* delimiter_payload);
+
+// Concatenate two lists destructively (see heap_interface.cpp)
+#ifdef __cplusplus
+extern "C" {
+#endif
+struct ListHeader* BCPL_CONCAT_LISTS(struct ListHeader* list1_header, struct ListHeader* list2_header);
+#ifdef __cplusplus
+}
+#endif
+/**
+ * BCPL strings are represented as pointers to arrays of 32-bit Unicode code points (UTF-32).
+ * The payload pointer points to the character data, not the length prefix.
+ */
+struct ListHeader* BCPL_SPLIT_STRING(uint32_t* source_payload, uint32_t* delimiter_payload);
+
 //=============================================================================
 // Runtime version information
 //=============================================================================
@@ -95,6 +118,7 @@ void finish(void);
  *
  * @param bcpl_string Pointer to a null-terminated BCPL string
  * @return            Pointer to the packed UTF-8 byte vector, or NULL on failure
+ * @note BCPL strings are represented as pointers to arrays of 32-bit Unicode code points (UTF-32).
  */
 void* PACKSTRING(uint32_t* bcpl_string);
 
@@ -103,6 +127,7 @@ void* PACKSTRING(uint32_t* bcpl_string);
  *
  * @param byte_vector Pointer to a UTF-8 byte vector
  * @return            Pointer to the unpacked BCPL string, or NULL on failure
+ * @note BCPL strings are represented as pointers to arrays of 32-bit Unicode code points (UTF-32).
  */
 uint32_t* UNPACKSTRING(const uint8_t* byte_vector);
 
@@ -111,6 +136,7 @@ uint32_t* UNPACKSTRING(const uint8_t* byte_vector);
  *
  * @param s Pointer to a BCPL string
  * @return  The number of characters in the string
+ * @note BCPL strings are represented as pointers to arrays of 32-bit Unicode code points (UTF-32).
  */
 int64_t STRLEN(const uint32_t* s);
 
@@ -120,6 +146,7 @@ int64_t STRLEN(const uint32_t* s);
  * @param s1 Pointer to the first BCPL string
  * @param s2 Pointer to the second BCPL string
  * @return   <0 if s1 < s2, 0 if s1 == s2, >0 if s1 > s2
+ * @note BCPL strings are represented as pointers to arrays of 32-bit Unicode code points (UTF-32).
  */
 int64_t STRCMP(const uint32_t* s1, const uint32_t* s2);
 
@@ -129,6 +156,7 @@ int64_t STRCMP(const uint32_t* s1, const uint32_t* s2);
  * @param dst Pointer to the destination BCPL string
  * @param src Pointer to the source BCPL string
  * @return    Pointer to the destination string
+ * @note BCPL strings are represented as pointers to arrays of 32-bit Unicode code points (UTF-32).
  */
 uint32_t* STRCOPY(uint32_t* dst, const uint32_t* src);
 

@@ -80,6 +80,7 @@ void bcpl_free(void* ptr) {
 #include "runtime_io.inc"
 
 // Main entry point for standalone executables
+/*
 int main(int argc, char *argv[]) {
     // Initialize the runtime environment
     printf("BCPL Runtime v%s initializing...\n", BCPL_RUNTIME_VERSION);
@@ -99,3 +100,4 @@ int main(int argc, char *argv[]) {
     
     return (int)result;
 }
+*/

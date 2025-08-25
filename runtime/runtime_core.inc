@@ -123,7 +123,7 @@ void WRITES(uint32_t* s) {
     }
 
     // 2. Start reading from the second word (s[1]), skipping the length at s[0].
-    uint32_t* p = s + 1;
+    uint32_t* p = s;
 
     // 3. Loop until a null terminator is found.
     while (*p != 0) {

@@ -4,8 +4,9 @@ cmake_minimum_required(VERSION 3.12)
 # Define the runtime library targets
 set(RUNTIME_SOURCES
     runtime_bridge.cpp
-    heap_c_bridge.cpp
+    heap_interface.cpp
     RuntimeBridge.cpp
+    runtime_string_ops.cpp
 )
 
 # Define include paths
@@ -28,7 +29,7 @@ set_target_properties(bcpl_runtime_jit PROPERTIES
 # This is only built if BCPL_BUILD_STANDALONE_RUNTIME is set to ON
 option(BCPL_BUILD_STANDALONE_RUNTIME "Build the standalone C runtime" OFF)
 if(BCPL_BUILD_STANDALONE_RUNTIME)
-    add_library(bcpl_runtime_c STATIC runtime.c)
+    add_library(bcpl_runtime_c STATIC runtime.c heap_manager.c runtime_string_ops.cpp)
     target_include_directories(bcpl_runtime_c PUBLIC ${RUNTIME_INCLUDE_DIRS})
     set_target_properties(bcpl_runtime_c PROPERTIES
         C_STANDARD 99
