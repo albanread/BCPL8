@@ -3,6 +3,11 @@
 #include <sstream>
 
 void ASTAnalyzer::visit(BlockStatement& node) {
+    // Synchronize SymbolTable scope
+    if (symbol_table_) {
+        symbol_table_->enterScope();
+    }
+
     // Save the current lexical scope before creating a new one.
     std::string previous_lexical_scope = current_lexical_scope_;
 
@@ -32,5 +37,10 @@ void ASTAnalyzer::visit(BlockStatement& node) {
     current_lexical_scope_ = previous_lexical_scope;
     if (trace_enabled_) {
         std::cout << "[ANALYZER TRACE] Exiting block scope, returning to: " << current_lexical_scope_ << std::endl;
+    }
+
+    // Synchronize SymbolTable scope
+    if (symbol_table_) {
+        symbol_table_->exitScope();
     }
 }

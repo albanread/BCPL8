@@ -4,6 +4,19 @@
 void ASTAnalyzer::visit(FunctionDeclaration& node) {
     if (trace_enabled_) std::cout << "[ANALYZER TRACE] Visiting FunctionDeclaration: " << node.name << std::endl;
 
+    // Synchronize SymbolTable scope
+    if (symbol_table_) {
+        symbol_table_->enterScope();
+    }
+
+    // --- START OF FIX ---
+    // Reset FOR loop state for the new function scope.
+    for_variable_unique_aliases_.clear();
+    while (!active_for_loop_scopes_.empty()) {
+        active_for_loop_scopes_.pop();
+    }
+    // --- END OF FIX ---
+
     // Save previous scopes to handle nested functions correctly.
     std::string previous_function_scope = current_function_scope_;
     std::string previous_lexical_scope = current_lexical_scope_;
@@ -38,4 +51,9 @@ void ASTAnalyzer::visit(FunctionDeclaration& node) {
     // Restore previous scopes upon exit.
     current_function_scope_ = previous_function_scope;
     current_lexical_scope_ = previous_lexical_scope;
+
+    // Synchronize SymbolTable scope
+    if (symbol_table_) {
+        symbol_table_->exitScope();
+    }
 }

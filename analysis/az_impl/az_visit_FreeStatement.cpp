@@ -6,8 +6,8 @@ void ASTAnalyzer::visit(FreeStatement& node) {
     if (trace_enabled_) {
         std::cout << "[ANALYZER TRACE] Visiting FreeStatement." << std::endl;
     }
-    if (node.expression_) {
-        node.expression_->accept(*this);
+    if (node.list_expr) {
+        node.list_expr->accept(*this);
     }
     // Ensure proper handling of FreeStatement node
 }

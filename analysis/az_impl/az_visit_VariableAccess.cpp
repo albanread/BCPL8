@@ -22,11 +22,17 @@ void ASTAnalyzer::visit(VariableAccess& node) {
                 }
             }
         }
-    } else if (variable_definitions_.find(node.name) == variable_definitions_.end()) {
-        // If it's a new, undeclared variable, define it in the current lexical scope.
-        variable_definitions_[node.name] = current_lexical_scope_;
-        if (current_function_scope_ != "Global") {
-            function_metrics_[current_function_scope_].num_variables++;
+    } else {
+        // Always add the variable to the SymbolTable if not present in the current scope
+        if (symbol_table_) {
+            symbol_table_->addSymbol(node.name, SymbolKind::LOCAL_VAR, VarType::UNKNOWN);
+        }
+        if (variable_definitions_.find(node.name) == variable_definitions_.end()) {
+            // If it's a new, undeclared variable, define it in the current lexical scope.
+            variable_definitions_[node.name] = current_lexical_scope_;
+            if (current_function_scope_ != "Global") {
+                function_metrics_[current_function_scope_].num_variables++;
+            }
         }
     }
 }

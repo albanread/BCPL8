@@ -24,6 +24,8 @@ void ASTAnalyzer::visit(ForStatement& node) {
         if (current_function_scope_ != "Global") {
             variable_definitions_[canonical_for_var_name] = current_function_scope_;
             function_metrics_[current_function_scope_].num_variables++;
+            // Register the type of the new loop variable. It's always an integer.
+            function_metrics_[current_function_scope_].variable_types[canonical_for_var_name] = VarType::INTEGER;
             if (trace_enabled_) {
                 std::cout << "[ANALYZER TRACE]   Created NEW unique loop var '" << canonical_for_var_name
                           << "' for original '" << node.loop_variable << "'. Defined for stack space. Incremented var count." << std::endl;
