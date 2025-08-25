@@ -1,4 +1,5 @@
 #include "NewCodeGenerator.h"
+#include "NewCodeGenerator.h"
 #include "LabelManager.h"
 #include "analysis/ASTAnalyzer.h"
 #include <iostream>
@@ -27,7 +28,7 @@ void NewCodeGenerator::visit(ConditionalExpression& node) {
     std::string true_result_reg = expression_result_reg_; // Register with true_expr result
 
     // Allocate a register for the final result of the conditional expression.
-    std::string final_result_reg = register_manager_.get_free_register();
+    std::string final_result_reg = register_manager_.get_free_register(*this);
     if (final_result_reg.empty()) {
         throw std::runtime_error("Failed to acquire a free register for conditional expression result");
     }

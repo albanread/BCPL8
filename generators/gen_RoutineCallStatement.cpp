@@ -232,65 +232,31 @@ void NewCodeGenerator::visit(RoutineCallStatement& node) {
         debug_print("Finished moving arguments to call registers.");
     };
 
-    // Local helper function for handling runtime function calls.
+    // Local helper function for handling runtime function calls (X28-relative table).
     auto handleRuntimeCall = [&](VariableAccess* var_access) {
-        debug_print("Handling runtime function call: " + var_access->name);
+        debug_print("Handling runtime routine call (X28-relative): " + var_access->name);
 
-        // Check if the runtime function is within range for a direct branch
-        void* func_addr_ptr = RuntimeManager::instance().get_function(var_access->name).address;
-        if (!func_addr_ptr) {
-            throw std::runtime_error("Error: Runtime function '" + var_access->name + "' registered but address is null.");
-        }
+        // 1. Get the routine's pre-assigned table offset from the RuntimeManager.
+        size_t offset = RuntimeManager::instance().get_function_offset(var_access->name);
 
-        // Get the current instruction stream address
-        size_t current_address = instruction_stream_.get_current_address();
-        bool direct_branch_possible = false;
+        // 2. Acquire a temporary scratch register to hold the function address.
+        std::string addr_reg = register_manager_.acquire_scratch_reg(*this);
 
-        // Only attempt direct branches if we have valid addresses to work with
-        if (current_address != 0) {
-            direct_branch_possible = codegen_utils::is_within_branch_range(
-                current_address, 
-                reinterpret_cast<uint64_t>(func_addr_ptr)
-            );
-        }
+        // 3. Emit the LDR instruction to load the pointer from the global table.
+        Instruction ldr_instr = Encoder::create_ldr_imm(addr_reg, "X19", offset);
+        ldr_instr.jit_attribute = JITAttribute::JitAddress;
+        emit(ldr_instr);
 
-        if (direct_branch_possible) {
-            // The function is within range for a direct branch - use BL instead of BLR
-            debug_print("  Runtime routine '" + var_access->name + "' is within direct branch range - using BL");
-            Instruction bl_instr = Encoder::create_branch_with_link(var_access->name);
-            bl_instr.jit_attribute = JITAttribute::JitCall;
-            emit(bl_instr);
-            debug_print("  Generated BL to runtime routine '" + var_access->name + "'");
-        } else {
-            // Function is too far away - use the register-based approach
-            debug_print("  Runtime routine '" + var_access->name + "' requires indirect branch - using BLR");
-            
-            std::string routine_addr_reg = register_manager_.get_cached_routine_reg(var_access->name);
+        // 4. Emit the indirect branch.
+        Instruction blr_instr = Encoder::create_branch_with_link_register(addr_reg);
+        blr_instr.jit_attribute = JITAttribute::JitCall;
+        blr_instr.target_label = var_access->name;
+        blr_instr.assembly_text += " ; call " + var_access->name;
+        emit(blr_instr);
 
-            if (routine_addr_reg.empty()) {
-                routine_addr_reg = register_manager_.get_reg_for_cache_eviction(var_access->name);
-
-                uint64_t abs_addr = reinterpret_cast<uint64_t>(func_addr_ptr);
-                debug_print("  Absolute address of '" + var_access->name + "': 0x" + std::to_string(abs_addr));
-
-                auto mov_instructions = Encoder::create_movz_movk_jit_addr(routine_addr_reg, abs_addr, var_access->name);
-                for (auto& instr : mov_instructions) {
-                    instr.jit_attribute = JITAttribute::JitAddress;
-                    debug_print("  Emitting MOV instruction for address load: " + instr.assembly_text);
-                }
-                if (!mov_instructions.empty()) {
-                    mov_instructions[0].assembly_text += " ; [JIT_CALL_START] " + var_access->name;
-                }
-                emit(mov_instructions);
-                debug_print("  Runtime routine '" + var_access->name + "' address loaded into " + routine_addr_reg + ".");
-            }
-
-            Instruction blr_instr = Encoder::create_branch_with_link_register(routine_addr_reg);
-            blr_instr.jit_attribute = JITAttribute::JitCall;
-            blr_instr.target_label = var_access->name;
-            emit(blr_instr);
-            debug_print("  Generated BLR to runtime routine '" + var_access->name + "' via " + routine_addr_reg + ".");
-        }
+        // 5. Release the scratch register.
+        register_manager_.release_register(addr_reg);
+        debug_print("Generated LDR/BLR sequence for runtime call to '" + var_access->name + "'");
     };
 
     // Local helper function for handling general routine calls (user-defined or function pointers).
@@ -304,7 +270,9 @@ void NewCodeGenerator::visit(RoutineCallStatement& node) {
         generate_expression_code(routine_expr_ref);
         std::string routine_addr_reg = expression_result_reg_;
         debug_print("  Routine address evaluated into register: " + routine_addr_reg);
-        emit(Encoder::create_branch_with_link_register(routine_addr_reg));
+        Instruction blr_instr = Encoder::create_branch_with_link_register(routine_addr_reg);
+        blr_instr.jit_attribute = JITAttribute::JitCall;
+        emit(blr_instr);
         debug_print("  Generated BLR call using address in " + routine_addr_reg + ".");
         register_manager_.release_register(routine_addr_reg);
         debug_print("  Released routine address register: " + routine_addr_reg);

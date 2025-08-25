@@ -1,4 +1,5 @@
 #include "NewCodeGenerator.h"
+#include "NewCodeGenerator.h"
 #include "LabelManager.h"
 #include "analysis/ASTAnalyzer.h"
 
@@ -21,13 +22,13 @@ void NewCodeGenerator::visit(CharIndirection& node) {
     emit(Encoder::create_lsl_imm(index_reg, index_reg, 2)); // index_reg <<= 2
 
     // Add the offset to the base address to get the effective memory address
-    std::string effective_addr_reg = register_manager.get_free_register();
+    std::string effective_addr_reg = register_manager.get_free_register(*this);
     emit(Encoder::create_add_reg(effective_addr_reg, string_base_reg, index_reg));
     register_manager.release_register(string_base_reg);
     register_manager.release_register(index_reg);
 
     // Load the 32-bit character value from the effective address into a W register
-    std::string x_dest_reg = register_manager.get_free_register(); // Get X register
+    std::string x_dest_reg = register_manager.get_free_register(*this); // Get X register
     std::string w_dest_reg = "W" + x_dest_reg.substr(1); // Convert "Xn" to "Wn"
     emit(Encoder::create_ldr_word_imm(w_dest_reg, effective_addr_reg, 0)); // Load 32-bit value
     register_manager.release_register(effective_addr_reg);

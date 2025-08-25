@@ -1,6 +1,7 @@
 #include "NewCodeGenerator.h"
 #include "LabelManager.h"
 #include "analysis/ASTAnalyzer.h"
+#include "NewCodeGenerator.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -48,7 +49,7 @@ void NewCodeGenerator::visit(ResultisStatement& node) {
         // --- Integer Result ---
         // If the result is in a float register but shouldn't be, convert it
         if (register_manager_.is_fp_register(result_reg) && !should_be_float) {
-            std::string int_reg = register_manager_.acquire_scratch_reg();
+            std::string int_reg = register_manager_.acquire_scratch_reg(*this);
             emit(Encoder::create_fcvtzs_reg(int_reg, result_reg));
             register_manager_.release_register(result_reg);
             result_reg = int_reg;

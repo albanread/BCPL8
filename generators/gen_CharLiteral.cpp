@@ -7,7 +7,7 @@
 void NewCodeGenerator::visit(CharLiteral& node) {
     debug_print("Visiting CharLiteral node.");
     auto& register_manager = register_manager_;
-    std::string x_dest_reg = register_manager.get_free_register(); // Get a free X register
+    std::string x_dest_reg = register_manager.get_free_register(*this); // Get a free X register
     std::string w_dest_reg = "W" + x_dest_reg.substr(1); // Convert "Xn" to "Wn"
 
     // Load the character's value into a 32-bit register (Wn)

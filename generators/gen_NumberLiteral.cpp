@@ -7,7 +7,7 @@
 void NewCodeGenerator::visit(NumberLiteral& node) {
     debug_print("Visiting NumberLiteral node.");
     auto& register_manager = RegisterManager::getInstance();
-    std::string dest_reg = register_manager.get_free_register(); // Get a free temporary register
+    std::string dest_reg = register_manager.get_free_register(*this); // Get a free temporary register
 
     if (node.literal_type == NumberLiteral::LiteralType::Integer) {
         // Load the integer literal value into the destination register.
@@ -26,7 +26,7 @@ void NewCodeGenerator::visit(NumberLiteral& node) {
         // Use DataGenerator to register the float literal and get its label
         std::string float_label = data_generator_.add_float_literal(node.float_value);
 
-        std::string temp_x_reg = register_manager.get_free_register(); // Need an X register for ADRP/ADD
+        std::string temp_x_reg = register_manager.get_free_register(*this); // Need an X register for ADRP/ADD
         std::string dest_d_reg = register_manager.get_free_float_register(); // Get a free float register
 
         emit(Encoder::create_adrp(temp_x_reg, float_label));

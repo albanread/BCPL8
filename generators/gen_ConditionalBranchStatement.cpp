@@ -2,17 +2,12 @@
 #include "AST.h"
 
 void NewCodeGenerator::visit(ConditionalBranchStatement& node) {
-    // 1. Evaluate the condition expression.
-    generate_expression_code(*node.condition_expr);
-    std::string cond_reg = expression_result_reg_;
-
-    // 2. Compare the result to zero.
-    emit(Encoder::create_cmp_reg(cond_reg, "XZR"));
-    register_manager_.release_register(cond_reg);
-
-    // 3. Emit the conditional branch.
-    emit(Encoder::create_branch_conditional(node.condition, node.targetLabel));
-
-    // Debug information
-    debug_print("ConditionalBranchStatement: Emitted CMP and B." + node.condition + " to " + node.targetLabel);
+    // --- START OF FIX ---
+    // This visitor is now intentionally left empty.
+    // The actual branch instruction is now generated exclusively by the
+    // generate_block_epilogue function, which correctly interprets the
+    // block's successors from the CFG. This avoids generating redundant
+    // and conflicting branch instructions.
+    debug_print("Visiting ConditionalBranchStatement (codegen is handled by block epilogue).");
+    // --- END OF FIX ---
 }

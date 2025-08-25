@@ -1,14 +1,13 @@
 #include "../NewCodeGenerator.h"
 
-
-
 #include <stdexcept>
 
-void NewCodeGenerator::visit(VecAllocationExpression& node) {
-    debug_print("Visiting VecAllocationExpression node.");
-    // `VEC size_expr`
-    // This allocates a vector (array) of words on the heap and returns its address.
-    // This typically translates to a call to a runtime memory allocation routine.
+void NewCodeGenerator::visit(FVecAllocationExpression& node) {
+    debug_print("Visiting FVecAllocationExpression node.");
+    // `FVEC size_expr`
+    // This allocates a vector (array) of float words on the heap and returns its address.
+    // This typically translates to a call to a runtime memory allocation routine,
+    // identical to VecAllocationExpression, but tracked as a float vector.
 
     // 1. Evaluate the size_expr (number of words).
     generate_expression_code(*node.size_expr);
@@ -39,13 +38,9 @@ void NewCodeGenerator::visit(VecAllocationExpression& node) {
     emit(ldr_instr);
     Instruction blr_instr = Encoder::create_branch_with_link_register(addr_reg);
     blr_instr.jit_attribute = JITAttribute::JitCall;
-    blr_instr.target_label = "BCPL_ALLOC_WORDS";
     emit(blr_instr);
-    register_manager_.release_register(addr_reg);
+    register_manager.release_register(addr_reg);
 
-    // The result of the allocation is the address in X0.
-    expression_result_reg_ = "X0"; // X0 now holds the vector's base address
-    register_manager_.mark_register_as_used("X0"); // X0 is used for the result
-
-    debug_print("Finished visiting VecAllocationExpression node.");
+    // 6. The result (pointer to float vector) is now in X0.
+    expression_result_reg_ = "X0";
 }
